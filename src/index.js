@@ -4,175 +4,179 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+/* =========================
+   DISCORD CLIENT
+========================= */
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages, // Quan trọng cho DM
+    GatewayIntentBits.DirectMessages,
   ],
-  partials: [
-    Partials.Channel, // Quan trọng để nhận tin nhắn DM
-    Partials.Message,
-  ],
+  partials: [Partials.Channel, Partials.Message],
 });
 
+/* =========================
+   GEMINI SETUP
+========================= */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
 const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.0-flash',
   systemInstruction: `
 Bạn là trợ lý AI trò chuyện trên Discord.
-Luôn trả lời bằng tiếng Việt.
-Ngắn gọn, rõ ràng, đúng trọng tâm.
-Không bịa, không lan man, không roleplay.
-Chỉ dùng Markdown khi thật cần.
+
+Quy tắc:
+- Luôn trả lời bằng tiếng Việt
+- Ngắn gọn, rõ ràng, đúng trọng tâm
+- Không tự giới thiệu bạn là AI hay mô hình ngôn ngữ
+- Không roleplay, không lan man
+- Nếu người dùng gửi tin dài / tin chuyển tiếp → hãy tóm tắt và giải thích
+- Chỉ dùng Markdown khi thật sự cần
 `,
   generationConfig: {
     temperature: 0.5,
     topP: 0.9,
     topK: 40,
     maxOutputTokens: 2048,
-  }
-})
-// Lưu lịch sử chat theo userId (cho DM) hoặc channelId (cho server)
-const conversationHistory = new Map();
-
-client.on('ready', () => {
-  console.log(`✅ Bot đã online: ${client.user.tag}`);
-  console.log(`🤖 Model: gemini-1.5-flash`);
-  console.log(`📱 User Install: Enabled`);
-  console.log(`💬 DM Support: Enabled`);
+  },
 });
 
+/* =========================
+   MEMORY (DM = user, SERVER = channel)
+========================= */
+const conversationHistory = new Map();
+
+/* =========================
+   READY
+========================= */
+client.once('ready', () => {
+  console.log(`✅ Bot online: ${client.user.tag}`);
+  console.log(`🤖 Model: gemini-2.0-flash`);
+});
+
+/* =========================
+   MESSAGE HANDLER
+========================= */
 client.on('messageCreate', async (message) => {
-  // Bỏ qua tin nhắn từ bot
-  if (message.author.bot) return;
-
-  // Kiểm tra xem có phải DM không
-  const isDM = message.channel.type === 1; // 1 = DM
-  
-  // Nếu là DM, tự động trả lời
-  // Nếu là server, chỉ trả lời khi được mention hoặc reply
-  const isMentioned = message.mentions.has(client.user);
-  const isReply = message.reference?.messageId;
-  
-  if (!isDM && !isMentioned && !isReply) return;
-
   try {
-    // Hiển thị typing indicator
+    if (message.author.bot) return;
+
+    const isDM = message.channel.type === 1;
+    const isMentioned = message.mentions.has(client.user);
+    const isReply = Boolean(message.reference?.messageId);
+
+    // Server: chỉ trả lời khi mention hoặc reply
+    if (!isDM && !isMentioned && !isReply) return;
+
     await message.channel.sendTyping();
 
-    // Tạo key để lưu lịch sử
-    // DM: dùng userId, Server: dùng channelId
+    /* ========= MEMORY KEY ========= */
     const historyKey = isDM ? message.author.id : message.channelId;
-    
     if (!conversationHistory.has(historyKey)) {
       conversationHistory.set(historyKey, []);
     }
     const history = conversationHistory.get(historyKey);
 
-    // Lấy nội dung tin nhắn (loại bỏ mention nếu có)
-    let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
+    /* ========= CLEAN USER MESSAGE ========= */
+    let userMessage = message.content
+      .replace(/<@!?\d+>/g, '')
+      .trim();
+
+    // Nếu nội dung rỗng nhưng message dài (forward, embed, mention role)
+    if (!userMessage && message.content.length > 50) {
+      userMessage = 'Hãy giải thích nội dung trên một cách dễ hiểu.';
+    }
 
     if (!userMessage) {
-      await message.reply('Bạn muốn nói gì với mình? 🤔');
+      await message.reply('Bạn muốn hỏi gì? 🤔');
       return;
     }
 
-    // Nếu là reply, lấy context từ tin nhắn được reply
+    /* ========= HANDLE REPLY ========= */
     if (isReply) {
       try {
-        const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
-        const repliedContent = repliedMessage.content || '[Tin nhắn không có nội dung]';
-        const repliedAuthor = repliedMessage.author.username;
-        
-        // Thêm context tự nhiên hơn cho AI
-        userMessage = `Người dùng đang trả lời tin nhắn của ${repliedAuthor}: "${repliedContent}"\n\nVà họ nói: ${userMessage}`;
-      } catch (err) {
-        console.log('Không thể fetch tin nhắn được reply');
+        const replied = await message.channel.messages.fetch(
+          message.reference.messageId
+        );
+
+        userMessage = `
+Context (tin nhắn trước của ${replied.author.username}):
+"${replied.content || '[Không có nội dung]'}"
+
+User hỏi:
+${userMessage}
+        `.trim();
+      } catch {
+        // bỏ qua nếu fetch fail
       }
     }
 
-    // Thêm tin nhắn vào lịch sử
+    /* ========= LONG / FORWARDED MESSAGE INTENT ========= */
+    if (userMessage.length > 400) {
+      userMessage = `
+Người dùng gửi một nội dung dài và hỏi: "là sao?"
+
+Hãy:
+- Tóm tắt nội dung
+- Giải thích ngắn gọn, dễ hiểu
+- Không nói về bản thân bạn
+
+Nội dung:
+${userMessage}
+      `.trim();
+    }
+
+    /* ========= PUSH TO HISTORY ========= */
     history.push({
       role: 'user',
       parts: [{ text: userMessage }],
     });
 
-    // Giới hạn lịch sử (giữ 30 tin nhắn)
-    if (history.length > 30) {
-      history.splice(0, history.length - 30);
+    if (history.length > 20) {
+      history.splice(0, history.length - 20);
     }
 
-    // Log để debug
-    const context = isDM ? 'DM' : 'Server';
-    console.log(`📨 [${context}] ${message.author.tag}: "${userMessage.substring(0, 50)}..."`);
-
-    // Tạo chat với lịch sử
+    /* ========= GEMINI CHAT ========= */
     const chat = model.startChat({
-      history: history.slice(0, -1),
+      history: history.length > 1 ? history.slice(0, -1) : [],
     });
 
-    // Gửi tin nhắn và nhận phản hồi
     const result = await chat.sendMessage(userMessage);
-    const response = await result.response;
-    let botReply = response.text();
+    const botReply = result.response.text();
 
-    console.log(`✅ Phản hồi: "${botReply.substring(0, 50)}..."`);
-
-    // Thêm phản hồi vào lịch sử
     history.push({
       role: 'model',
       parts: [{ text: botReply }],
     });
 
-    // Chia nhỏ nếu quá dài
+    /* ========= SEND RESPONSE ========= */
     if (botReply.length > 2000) {
       const chunks = botReply.match(/[\s\S]{1,2000}/g) || [];
-      for (const chunk of chunks) {
-        await message.reply(chunk);
+      await message.reply(chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await message.channel.send(chunks[i]);
       }
     } else {
       await message.reply(botReply);
     }
 
-  } catch (error) {
-    console.error('❌ Lỗi chi tiết:', error);
-    
-    let errorMessage = '⚠️ Xin lỗi, đã có lỗi xảy ra khi xử lý tin nhắn của bạn.';
-    
-    if (error.message?.includes('API key')) {
-      errorMessage = '🔑 Lỗi API Key. Admin vui lòng kiểm tra lại!';
-      console.error('🔑 API Key không hợp lệ!');
-    } else if (error.message?.includes('quota')) {
-      errorMessage = '⏰ API đã hết quota. Vui lòng thử lại sau!';
-      console.error('⏰ Gemini API hết quota!');
-    } else if (error.message?.includes('model')) {
-      errorMessage = '🤖 Lỗi model AI. Vui lòng liên hệ admin!';
-      console.error('🤖 Model không tồn tại hoặc không khả dụng!');
-    }
-    
+  } catch (err) {
+    console.error('❌ Error:', err);
     try {
-      await message.reply(errorMessage);
-    } catch (replyError) {
-      console.error('Không thể gửi tin nhắn lỗi:', replyError);
-    }
+      await message.reply('⚠️ Có lỗi xảy ra, thử lại sau nhé.');
+    } catch {}
   }
 });
 
-// Xử lý lỗi không mong muốn
-client.on('error', error => {
-  console.error('❌ Discord client error:', error);
-});
+/* =========================
+   ERROR HANDLING
+========================= */
+process.on('unhandledRejection', console.error);
+client.on('error', console.error);
 
-process.on('unhandledRejection', error => {
-  console.error('❌ Unhandled promise rejection:', error);
-});
-
-// Login
-client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log('🔐 Đang đăng nhập...'))
-  .catch(err => {
-    console.error('❌ Không thể login Discord:', err);
-    process.exit(1);
-  });
+/* =========================
+   LOGIN
+========================= */
+client.login(process.env.DISCORD_TOKEN);
