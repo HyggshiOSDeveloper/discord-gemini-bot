@@ -1,69 +1,102 @@
-import { Client, GatewayIntentBits, Collection } from 'discord.js';
+import { Client, GatewayIntentBits } from 'discord.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import fs from 'fs';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
 });
 
-// Khởi tạo Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
 
-// Lưu lịch sử chat theo userId
+// Lưu lịch sử chat cho mỗi channel
 const conversationHistory = new Map();
 
-// Load commands
-client.commands = new Collection();
-const commandsPath = join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-
-for (const file of commandFiles) {
-  const command = await import(`./commands/${file}`);
-  client.commands.set(command.default.data.name, command.default);
-}
-
 client.on('ready', () => {
-  console.log(`✅ Bot online: ${client.user.tag}`);
-  console.log(`📱 User Install: Enabled`);
-  console.log(`💬 Slash Commands: ${client.commands.size}`);
+  console.log(`✅ Bot đã online: ${client.user.tag}`);
 });
 
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+client.on('messageCreate', async (message) => {
+  // Bỏ qua tin nhắn từ bot
+  if (message.author.bot) return;
 
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
+  // Chỉ trả lời khi được mention hoặc reply
+  const isMentioned = message.mentions.has(client.user);
+  const isReply = message.reference?.messageId;
+
+  if (!isMentioned && !isReply) return;
 
   try {
-    await command.execute(interaction, model, conversationHistory);
-  } catch (error) {
-    console.error('❌ Error executing command:', error);
-    const reply = { content: '⚠️ Đã có lỗi xảy ra!', ephemeral: true };
-    
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(reply);
-    } else {
-      await interaction.reply(reply);
+    // Hiển thị typing indicator
+    await message.channel.sendTyping();
+
+    // Lấy hoặc tạo lịch sử chat cho channel
+    if (!conversationHistory.has(message.channelId)) {
+      conversationHistory.set(message.channelId, []);
     }
+    const history = conversationHistory.get(message.channelId);
+
+    // Lấy nội dung tin nhắn (loại bỏ mention)
+    let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
+
+    // Nếu là reply, lấy context từ tin nhắn được reply
+    if (isReply) {
+      const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
+      userMessage = `[Đang trả lời tin nhắn: "${repliedMessage.content}"]\n${userMessage}`;
+    }
+
+    // Thêm tin nhắn người dùng vào lịch sử
+    history.push({
+      role: 'user',
+      parts: [{ text: userMessage }],
+    });
+
+    // Giới hạn lịch sử (giữ 20 tin nhắn gần nhất)
+    if (history.length > 20) {
+      history.splice(0, history.length - 20);
+    }
+
+    // Tạo chat với lịch sử
+    const chat = model.startChat({
+      history: history.slice(0, -1), // Không bao gồm tin nhắn hiện tại
+      generationConfig: {
+        maxOutputTokens: 1000,
+        temperature: 0.9,
+      },
+    });
+
+    // Gửi tin nhắn và nhận phản hồi
+    const result = await chat.sendMessage(userMessage);
+    const response = await result.response;
+    let botReply = response.text();
+
+    // Thêm phản hồi của bot vào lịch sử
+    history.push({
+      role: 'model',
+      parts: [{ text: botReply }],
+    });
+
+    // Chia nhỏ tin nhắn nếu quá dài (Discord giới hạn 2000 ký tự)
+    if (botReply.length > 2000) {
+      const chunks = botReply.match(/[\s\S]{1,2000}/g) || [];
+      for (const chunk of chunks) {
+        await message.reply(chunk);
+      }
+    } else {
+      await message.reply(botReply);
+    }
+
+  } catch (error) {
+    console.error('❌ Lỗi:', error);
+    await message.reply('⚠️ Xin lỗi, đã có lỗi xảy ra khi xử lý tin nhắn của bạn.');
   }
 });
 
 client.login(process.env.DISCORD_TOKEN);
-```
-
-### .gitignore
-```
-node_modules/
-.env
-.DS_Store
