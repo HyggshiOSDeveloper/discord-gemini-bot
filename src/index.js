@@ -20,6 +20,7 @@ const client = new Client({
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ 
   model: 'gemini-2.5-flash',
+  systemInstruction: 'Bạn là một trợ lý AI thân thiện, trả lời tự nhiên và dễ hiểu. Luôn trả lời bằng tiếng Việt và EN có dấu. dùng định dạng markdown (nêu muốn) hay code block khi không cần thiết. Hãy trò chuyện như một người bạn.',
   generationConfig: {
     temperature: 1.0,
     topP: 0.95,
@@ -77,7 +78,11 @@ client.on('messageCreate', async (message) => {
     if (isReply) {
       try {
         const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
-        userMessage = `[Trả lời: "${repliedMessage.content}"]\n${userMessage}`;
+        const repliedContent = repliedMessage.content || '[Tin nhắn không có nội dung]';
+        const repliedAuthor = repliedMessage.author.username;
+        
+        // Thêm context tự nhiên hơn cho AI
+        userMessage = `Người dùng đang trả lời tin nhắn của ${repliedAuthor}: "${repliedContent}"\n\nVà họ nói: ${userMessage}`;
       } catch (err) {
         console.log('Không thể fetch tin nhắn được reply');
       }
