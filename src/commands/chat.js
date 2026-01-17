@@ -3,7 +3,7 @@ import { SlashCommandBuilder } from 'discord.js';
 export default {
   data: new SlashCommandBuilder()
     .setName('chat')
-    .setDescription('Trò chuyện với Gemini AI')
+    .setDescription('Trò chuyện với Gemini 1.5 Flash AI')
     .addStringOption(option =>
       option
         .setName('message')
@@ -17,7 +17,7 @@ export default {
         .setRequired(false)
     )
     .setIntegrationTypes([0, 1]) // 0 = Guild, 1 = User
-    .setContexts([0, 1, 2]), // 0 = Guild, 1 = DM, 2 = Group DM/Private Channel
+    .setContexts([0, 1, 2]), // 0 = Guild, 1 = DM, 2 = Group DM
 
   async execute(interaction, model, conversationHistory) {
     const message = interaction.options.getString('message');
@@ -40,18 +40,14 @@ export default {
         parts: [{ text: message }],
       });
 
-      // Giới hạn lịch sử 20 tin nhắn
-      if (history.length > 20) {
-        history.splice(0, history.length - 20);
+      // Giới hạn lịch sử 30 tin nhắn (Flash có context window lớn hơn)
+      if (history.length > 30) {
+        history.splice(0, history.length - 30);
       }
 
-      // Tạo chat với context
+      // Tạo chat với context - Flash không cần config lại vì đã set global
       const chat = model.startChat({
         history: history.slice(0, -1),
-        generationConfig: {
-          maxOutputTokens: 2000,
-          temperature: 0.9,
-        },
       });
 
       const result = await chat.sendMessage(message);
