@@ -18,17 +18,22 @@ const client = new Client({
 });
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ 
-  model: 'gemini-2.5-flash',
-  systemInstruction: 'Bạn là một trợ lý AI thân thiện, trả lời tự nhiên và dễ hiểu. Luôn trả lời bằng tiếng Việt và EN có dấu. dùng định dạng markdown (nêu muốn) hay code block khi không cần thiết. Hãy trò chuyện như một người bạn.',
+const model = genAI.getGenerativeModel({
+  model: 'gemini-2.0-flash',
+  systemInstruction: `
+Bạn là trợ lý AI trò chuyện trên Discord.
+Luôn trả lời bằng tiếng Việt.
+Ngắn gọn, rõ ràng, đúng trọng tâm.
+Không bịa, không lan man, không roleplay.
+Chỉ dùng Markdown khi thật cần.
+`,
   generationConfig: {
-    temperature: 1.0,
-    topP: 0.95,
+    temperature: 0.5,
+    topP: 0.9,
     topK: 40,
-    maxOutputTokens: 8192,
+    maxOutputTokens: 2048,
   }
-});
-
+})
 // Lưu lịch sử chat theo userId (cho DM) hoặc channelId (cho server)
 const conversationHistory = new Map();
 
