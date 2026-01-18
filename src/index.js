@@ -1,12 +1,10 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
+import fetch from 'node-fetch';
 
 dotenv.config();
 
-/* =======================
-   DISCORD CLIENT
-======================= */
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -20,149 +18,202 @@ const client = new Client({
   ],
 });
 
-/* =======================
-   GEMINI AI
-======================= */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
-  systemInstruction: `
-Bạn là trợ lý AI trên Discord.
-Luôn trả lời bằng tiếng Việt.
-Ngắn gọn, rõ ràng, đúng trọng tâm.
-Không bịa đặt.
-Nếu không đủ thông tin, nói rõ là không đủ.
-`,
+// Model cho text
+const textModel = genAI.getGenerativeModel({ 
+  model: 'gemini-1.5-flash',
+  systemInstruction: 'Bạn là trợ lý AI thân thiện có tên Hyggshi OS AI. Trả lời tự nhiên, dễ hiểu bằng tiếng Việt. Bạn có thể nhìn thấy và phân tích hình ảnh khi người dùng gửi.',
   generationConfig: {
-    temperature: 0.5,
-    topP: 0.9,
+    temperature: 1.0,
+    topP: 0.95,
     topK: 40,
-    maxOutputTokens: 2048,
-  },
+    maxOutputTokens: 8192,
+  }
 });
 
-/* =======================
-   LƯU LỊCH SỬ CHAT
-======================= */
+// Model cho vision (text + ảnh)
+const visionModel = genAI.getGenerativeModel({ 
+  model: 'gemini-2.5-flash',
+  systemInstruction: 'Bạn là trợ lý AI có khả năng nhìn thấy và phân tích hình ảnh. Hãy mô tả chi tiết những gì bạn thấy trong ảnh bằng tiếng Việt, bao gồm: đối tượng chính, màu sắc, bối cảnh, cảm xúc, và bất kỳ chi tiết thú vị nào.',
+  generationConfig: {
+    temperature: 1.0,
+    topP: 0.95,
+    maxOutputTokens: 8192,
+  }
+});
+
 const conversationHistory = new Map();
 
-/* =======================
-   READY
-======================= */
-client.once('ready', () => {
-  console.log(`✅ Bot online: ${client.user.tag}`);
+// Hàm chuyển đổi ảnh URL thành format Gemini
+async function urlToGenerativePart(url, mimeType) {
+  try {
+    const response = await fetch(url);
+    const buffer = await response.arrayBuffer();
+    return {
+      inlineData: {
+        data: Buffer.from(buffer).toString('base64'),
+        mimeType
+      }
+    };
+  } catch (error) {
+    console.error('Lỗi khi tải ảnh:', error);
+    return null;
+  }
+}
+
+client.on('ready', () => {
+  console.log(`✅ Bot đã online: ${client.user.tag}`);
+  console.log(`🤖 Model: gemini-1.5-flash`);
+  console.log(`👁️ Vision: Enabled`);
+  console.log(`📱 User Install: Enabled`);
+  console.log(`💬 DM Support: Enabled`);
 });
 
-/* =======================
-   MESSAGE HANDLER
-======================= */
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  const isDM = message.channel.type === 1; // DM
+  const isDM = message.channel.type === 1;
   const isMentioned = message.mentions.has(client.user);
   const isReply = message.reference?.messageId;
-
-  // Server: chỉ trả lời khi mention hoặc reply
+  
   if (!isDM && !isMentioned && !isReply) return;
 
-  /* ====== CHẶN FORWARD ====== */
-  if (
-    message.content.trim() === '' &&
-    message.embeds.length > 0
-  ) {
-    await message.reply(
-      '⚠️ **Discord không cho bot đọc nội dung chuyển tiếp.**\n' +
-      '👉 Hãy **Reply trực tiếp tin gốc** hoặc **copy nội dung** rồi gửi lại.'
-    );
-    return;
-  }
-
-  await message.channel.sendTyping();
-
   try {
+    await message.channel.sendTyping();
+
     const historyKey = isDM ? message.author.id : message.channelId;
+    
     if (!conversationHistory.has(historyKey)) {
       conversationHistory.set(historyKey, []);
     }
     const history = conversationHistory.get(historyKey);
 
-    // Lấy nội dung người dùng
-    let userMessage = message.content
-      .replace(/<@!?\d+>/g, '')
-      .trim();
+    let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
 
-    if (!userMessage) {
-      await message.reply('🤔 Bạn muốn hỏi gì?');
-      return;
-    }
-
-    /* ====== CONTEXT REPLY ====== */
-    if (isReply) {
-      try {
-        const repliedMsg = await message.channel.messages.fetch(
-          message.reference.messageId
-        );
-        userMessage =
-          `Tin nhắn gốc:\n"${repliedMsg.content}"\n\n` +
-          `Người dùng hỏi: ${userMessage}`;
-      } catch {
-        console.log('⚠️ Không fetch được tin reply');
+    // Kiểm tra có ảnh không
+    const hasImage = message.attachments.size > 0;
+    const images = [];
+    
+    if (hasImage) {
+      for (const attachment of message.attachments.values()) {
+        // Kiểm tra file type
+        if (attachment.contentType?.startsWith('image/')) {
+          console.log(`🖼️ Đang xử lý ảnh: ${attachment.name} (${attachment.contentType})`);
+          const imagePart = await urlToGenerativePart(attachment.url, attachment.contentType);
+          if (imagePart) {
+            images.push(imagePart);
+          }
+        }
       }
     }
 
-    // Thêm vào lịch sử
-    history.push({
-      role: 'user',
-      parts: [{ text: userMessage }],
-    });
-
-    if (history.length > 30) {
-      history.splice(0, history.length - 30);
+    // Nếu không có text và không có ảnh
+    if (!userMessage && images.length === 0) {
+      await message.reply('Bạn muốn nói gì với mình? 🤔');
+      return;
     }
 
-    const chat = model.startChat({
-      history: history.slice(0, -1),
-    });
+    // Nếu có ảnh nhưng không có text, thêm prompt mặc định
+    if (images.length > 0 && !userMessage) {
+      userMessage = 'Hãy phân tích và mô tả chi tiết hình ảnh này';
+    }
 
-    const result = await chat.sendMessage(userMessage);
-    const replyText = result.response.text();
+    // Xử lý reply
+    if (isReply) {
+      try {
+        const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
+        const repliedContent = repliedMessage.content || '[Tin nhắn không có nội dung]';
+        const repliedAuthor = repliedMessage.author.username;
+        userMessage = `Người dùng đang trả lời tin nhắn của ${repliedAuthor}: "${repliedContent}"\n\nVà họ nói: ${userMessage}`;
+      } catch (err) {
+        console.log('Không thể fetch tin nhắn được reply');
+      }
+    }
 
-    history.push({
-      role: 'model',
-      parts: [{ text: replyText }],
-    });
+    const context = isDM ? 'DM' : 'Server';
+    const imageInfo = images.length > 0 ? ` + ${images.length} ảnh` : '';
+    console.log(`📨 [${context}] ${message.author.tag}: "${userMessage.substring(0, 50)}..."${imageInfo}`);
 
-    /* ====== GỬI PHẢN HỒI ====== */
-    if (replyText.length > 2000) {
-      const chunks = replyText.match(/[\s\S]{1,2000}/g);
+    let botReply;
+
+    // Nếu có ảnh, dùng vision model (không lưu lịch sử ảnh)
+    if (images.length > 0) {
+      const parts = [{ text: userMessage }, ...images];
+      const result = await visionModel.generateContent(parts);
+      const response = await result.response;
+      botReply = response.text();
+      
+      console.log(`✅ [VISION] Phản hồi: "${botReply.substring(0, 50)}..."`);
+    } else {
+      // Không có ảnh, dùng text model với lịch sử
+      history.push({
+        role: 'user',
+        parts: [{ text: userMessage }],
+      });
+
+      if (history.length > 30) {
+        history.splice(0, history.length - 30);
+      }
+
+      const chat = textModel.startChat({
+        history: history.slice(0, -1),
+      });
+
+      const result = await chat.sendMessage(userMessage);
+      const response = await result.response;
+      botReply = response.text();
+
+      history.push({
+        role: 'model',
+        parts: [{ text: botReply }],
+      });
+
+      console.log(`✅ [TEXT] Phản hồi: "${botReply.substring(0, 50)}..."`);
+    }
+
+    // Gửi phản hồi
+    if (botReply.length > 2000) {
+      const chunks = botReply.match(/[\s\S]{1,2000}/g) || [];
       for (const chunk of chunks) {
         await message.reply(chunk);
       }
     } else {
-      await message.reply(replyText);
+      await message.reply(botReply);
     }
 
-  } catch (err) {
-    console.error('❌ Lỗi:', err);
-
-    let msg = '⚠️ Có lỗi xảy ra.';
-    if (err.message?.includes('API key')) msg = '🔑 Lỗi API Key Gemini';
-    if (err.message?.includes('quota')) msg = '⏰ Gemini hết quota';
-    if (err.message?.includes('model')) msg = '🤖 Model Gemini lỗi';
-
-    await message.reply(msg);
+  } catch (error) {
+    console.error('❌ Lỗi chi tiết:', error);
+    
+    let errorMessage = '⚠️ Xin lỗi, đã có lỗi xảy ra khi xử lý tin nhắn của bạn.';
+    
+    if (error.message?.includes('API key')) {
+      errorMessage = '🔑 Lỗi API Key. Admin vui lòng kiểm tra lại!';
+    } else if (error.message?.includes('quota')) {
+      errorMessage = '⏰ API đã hết quota. Vui lòng thử lại sau!';
+    } else if (error.message?.includes('INVALID_ARGUMENT')) {
+      errorMessage = '🖼️ Lỗi xử lý hình ảnh. Vui lòng thử ảnh khác!';
+    }
+    
+    try {
+      await message.reply(errorMessage);
+    } catch (replyError) {
+      console.error('Không thể gửi tin nhắn lỗi:', replyError);
+    }
   }
 });
 
-/* =======================
-   ERROR HANDLER
-======================= */
-process.on('unhandledRejection', console.error);
-client.on('error', console.error);
+client.on('error', error => {
+  console.error('❌ Discord client error:', error);
+});
 
-/* =======================
-   LOGIN
-======================= */
-client.login(process.env.DISCORD_TOKEN);
+process.on('unhandledRejection', error => {
+  console.error('❌ Unhandled promise rejection:', error);
+});
+
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log('🔐 Đang đăng nhập...'))
+  .catch(err => {
+    console.error('❌ Không thể login Discord:', err);
+    process.exit(1);
+  });
