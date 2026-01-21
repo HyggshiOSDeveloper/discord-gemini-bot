@@ -23,7 +23,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Model cho text
 const textModel = genAI.getGenerativeModel({ 
   model: 'gemini-1.5-flash',
-  systemInstruction: 'Bạn là trợ lý AI thân thiện có tên Hyggshi OS AI. Trả lời tự nhiên, dễ hiểu bằng tiếng Việt. Bạn có thể nhìn thấy và phân tích hình ảnh khi người dùng gửi.',
+  systemInstruction: 'You are a friendly AI assistant named Hyggshi OS AI. You respond naturally and clearly. You can see and analyze images when users send them.',
   generationConfig: {
     temperature: 1.0,
     topP: 0.95,
