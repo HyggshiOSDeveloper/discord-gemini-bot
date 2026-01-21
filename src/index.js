@@ -35,7 +35,7 @@ const textModel = genAI.getGenerativeModel({
 // Model cho vision (text + ảnh)
 const visionModel = genAI.getGenerativeModel({ 
   model: 'gemini-2.5-flash',
-  systemInstruction: 'Bạn là trợ lý AI có khả năng nhìn thấy và phân tích hình ảnh. Hãy mô tả chi tiết những gì bạn thấy trong ảnh bằng tiếng Việt, bao gồm: đối tượng chính, màu sắc, bối cảnh, cảm xúc, và bất kỳ chi tiết thú vị nào.',
+  systemInstruction: 'You are an AI assistant capable of seeing and analyzing images. Describe in detail what you see in the image, including: the main subject, colors, background, emotions, and any interesting details.',
   generationConfig: {
     temperature: 1.0,
     topP: 0.95,
