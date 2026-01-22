@@ -26,7 +26,8 @@ const textModel = genAI.getGenerativeModel({
 
 IMPORTANT - Image creation commands:
 - When users want to create images, they use: "/create <description>" or "/imagine <description>"
-- Example: "/create a cat wearing glasses" or "/imagine sunset on beach"
+- They can add orientation flags: --portrait, --landscape, --square
+- Example: "/create a cat wearing glasses --portrait" or "/imagine sunset on beach --landscape"
 - You DON'T need to process these commands, just respond normally to other topics.`,
   generationConfig: {
     temperature: 1.0,
@@ -48,10 +49,35 @@ const visionModel = genAI.getGenerativeModel({
 
 const conversationHistory = new Map();
 
+// Image orientation presets
+const ORIENTATIONS = {
+  portrait: { width: 768, height: 1344, emoji: '📱' },
+  landscape: { width: 1344, height: 768, emoji: '🖼️' },
+  square: { width: 1024, height: 1024, emoji: '⬛' },
+};
+
+// Parse orientation from prompt
+function parseOrientation(prompt) {
+  const orientationFlags = ['--portrait', '--landscape', '--square'];
+  let orientation = 'square'; // default
+  let cleanPrompt = prompt;
+
+  for (const flag of orientationFlags) {
+    if (prompt.toLowerCase().includes(flag)) {
+      orientation = flag.replace('--', '');
+      cleanPrompt = prompt.replace(new RegExp(flag, 'gi'), '').trim();
+      break;
+    }
+  }
+
+  return { orientation, cleanPrompt };
+}
+
 // Image generation using Pollinations.ai (Free, no API key needed)
-async function generateImage(prompt) {
+async function generateImage(prompt, orientation = 'square') {
   const encodedPrompt = encodeURIComponent(prompt);
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true`;
+  const { width, height } = ORIENTATIONS[orientation];
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&nologo=true&enhance=true`;
   return imageUrl;
 }
 
@@ -98,7 +124,13 @@ client.on('ready', () => {
   console.log(`🎨 Image Generation: Enabled (Pollinations.ai)`);
   console.log(`📱 User Install: Enabled`);
   console.log(`💬 DM Support: Enabled`);
-  console.log(`\n📋 Image commands: /create <description> or /imagine <description>`);
+  console.log(`\n📋 Image commands:`);
+  console.log(`   /create <description> [--portrait|--landscape|--square]`);
+  console.log(`   /imagine <description> [--portrait|--landscape|--square]`);
+  console.log(`\n📐 Orientations:`);
+  console.log(`   --portrait  (768x1344)`);
+  console.log(`   --landscape (1344x768)`);
+  console.log(`   --square    (1024x1024) [default]`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -127,23 +159,27 @@ client.on('messageCreate', async (message) => {
     const isImageCommand = imageCommands.some(cmd => userMessage.toLowerCase().startsWith(cmd));
 
     if (isImageCommand) {
-      const prompt = userMessage.split(' ').slice(1).join(' ').trim();
+      const promptWithFlags = userMessage.split(' ').slice(1).join(' ').trim();
       
-      if (!prompt) {
-        await message.reply('❌ Please provide a description for the image!\n\n**Usage:**\n`/create <description>`\n\n**Examples:**\n`/create a cat wearing sunglasses on the moon`\n`/imagine cyberpunk city at night`');
+      if (!promptWithFlags) {
+        await message.reply('❌ Please provide a description for the image!\n\n**Usage:**\n`/create <description> [--portrait|--landscape|--square]`\n\n**Examples:**\n`/create a cat wearing sunglasses on the moon --portrait`\n`/imagine cyberpunk city at night --landscape`\n`/create beautiful sunset --square`\n\n**Orientations:**\n📱 `--portrait` (768x1344)\n🖼️ `--landscape` (1344x768)\n⬛ `--square` (1024x1024) [default]');
         return;
       }
 
-      console.log(`🎨 Generating image from prompt: "${prompt}"`);
+      // Parse orientation and clean prompt
+      const { orientation, cleanPrompt } = parseOrientation(promptWithFlags);
+      const { width, height, emoji } = ORIENTATIONS[orientation];
+
+      console.log(`🎨 Generating ${orientation} image (${width}x${height}) from prompt: "${cleanPrompt}"`);
       
-      const processingMsg = await message.reply('🎨 Creating image... Please wait!');
+      const processingMsg = await message.reply(`🎨 Creating ${emoji} **${orientation}** image (${width}x${height})... Please wait!`);
 
       try {
         // Enhance prompt with Gemini
-        const enhancedPrompt = await enhancePrompt(prompt);
+        const enhancedPrompt = await enhancePrompt(cleanPrompt);
         
-        // Generate image
-        const imageUrl = await generateImage(enhancedPrompt);
+        // Generate image with orientation
+        const imageUrl = await generateImage(enhancedPrompt, orientation);
 
         // Download image to send as attachment
         const imageResponse = await fetch(imageUrl);
@@ -154,8 +190,8 @@ client.on('messageCreate', async (message) => {
 
         // Create beautiful embed
         const embed = new EmbedBuilder()
-          .setTitle('🎨 AI Generated Image!')
-          .setDescription(`**Original:** ${prompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 200)}${enhancedPrompt.length > 200 ? '...' : ''}`)
+          .setTitle(`🎨 AI Generated Image ${emoji}`)
+          .setDescription(`**Original:** ${cleanPrompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 200)}${enhancedPrompt.length > 200 ? '...' : ''}\n**Orientation:** ${emoji} ${orientation.toUpperCase()} (${width}x${height})`)
           .setImage('attachment://generated-image.png')
           .setColor(0x00D9FF)
           .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
@@ -167,7 +203,7 @@ client.on('messageCreate', async (message) => {
           files: [attachment]
         });
 
-        console.log(`✅ Image created successfully for: ${message.author.tag}`);
+        console.log(`✅ ${orientation.toUpperCase()} image created successfully for: ${message.author.tag}`);
         return;
 
       } catch (error) {
@@ -194,7 +230,7 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!userMessage && images.length === 0) {
-      await message.reply('What would you like to talk about? 🤔\n\n💡 **Tip:** Use `/create <description>` to generate AI images!');
+      await message.reply('What would you like to talk about? 🤔\n\n💡 **Tip:** Use `/create <description> [--portrait|--landscape|--square]` to generate AI images!\n\n**Examples:**\n`/create a cat in space --portrait`\n`/imagine sunset beach --landscape`');
       return;
     }
 
