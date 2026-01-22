@@ -28,9 +28,9 @@ const textModel = genAI.getGenerativeModel({
 
 IMPORTANT - Image creation commands:
 - When users want to create images, they use: "/create <description>" or "/imagine <description>"
+- They can add model flags: --flux, --turbo, --klein, --gptimage
 - They can add orientation flags: --portrait, --landscape, --square
-- They can specify models: --flux, --nanobanana, --seedream, --gptimage, or default (pollinations)
-- Example: "/create a cat wearing glasses --portrait --flux" or "/imagine sunset on beach --landscape --nanobanana"
+- Example: "/create a cat wearing glasses --flux --portrait"
 - You DON'T need to process these commands, just respond normally to other topics.`,
   generationConfig: {
     temperature: 1.0,
@@ -54,7 +54,7 @@ const conversationHistory = new Map();
 
 // Video generation tracking (5 free per user)
 const VIDEO_LIMIT = 5;
-const videoUsage = new Map(); // userId -> count
+const videoUsage = new Map();
 
 // Load video usage from file
 function loadVideoUsage() {
@@ -99,6 +99,38 @@ function incrementVideoUsage(userId) {
   saveVideoUsage();
 }
 
+// Image models available on Pollinations.ai
+const IMAGE_MODELS = {
+  flux: { 
+    name: 'Flux', 
+    param: 'flux',
+    emoji: '⚡', 
+    description: 'High quality, detailed images (default)',
+    quality: 'Premium'
+  },
+  turbo: { 
+    name: 'Turbo', 
+    param: 'turbo',
+    emoji: '🚀', 
+    description: 'Fast generation, good quality',
+    quality: 'Fast'
+  },
+  klein: { 
+    name: 'Klein', 
+    param: 'klein',
+    emoji: '🎨', 
+    description: 'Artistic and creative style',
+    quality: 'Artistic'
+  },
+  gptimage: { 
+    name: 'GPT Image', 
+    param: 'gptimage',
+    emoji: '🤖', 
+    description: 'AI-optimized generation',
+    quality: 'Balanced'
+  }
+};
+
 // Image orientation presets
 const ORIENTATIONS = {
   portrait: { width: 768, height: 1344, emoji: '📱' },
@@ -106,105 +138,42 @@ const ORIENTATIONS = {
   square: { width: 1024, height: 1024, emoji: '⬛' },
 };
 
-// Image generation models/providers
-const IMAGE_MODELS = {
-  pollinations: {
-    name: 'Pollinations AI',
-    emoji: '🌸',
-    color: 0x00D9FF,
-    description: 'Balanced quality and speed'
-  },
-  flux: {
-    name: 'Flux',
-    emoji: '⚡',
-    color: 0xFF6B35,
-    description: 'High quality, photorealistic'
-  },
-  nanobanana: {
-    name: 'Nanobanana',
-    emoji: '🍌',
-    color: 0xFFE135,
-    description: 'Creative and artistic style'
-  },
-  seedream: {
-    name: 'Seedream',
-    emoji: '🌙',
-    color: 0x9B59B6,
-    description: 'Dreamlike, surreal imagery'
-  },
-  gptimage: {
-    name: 'GPT Image',
-    emoji: '🤖',
-    color: 0x10A37F,
-    description: 'AI-enhanced generation'
-  }
-};
-
-// Parse orientation and model from prompt
-function parseFlags(prompt) {
-  const orientationFlags = ['--portrait', '--landscape', '--square'];
-  const modelFlags = ['--flux', '--nanobanana', '--seedream', '--gptimage', '--pollinations'];
-  
+// Parse model and orientation from prompt
+function parseImageFlags(prompt) {
+  let model = 'flux'; // default
   let orientation = 'square'; // default
-  let model = 'pollinations'; // default
   let cleanPrompt = prompt;
 
-  // Parse orientation
-  for (const flag of orientationFlags) {
+  // Check for model flags
+  for (const [key, value] of Object.entries(IMAGE_MODELS)) {
+    const flag = `--${key}`;
     if (prompt.toLowerCase().includes(flag)) {
+      model = key;
+      cleanPrompt = cleanPrompt.replace(new RegExp(flag, 'gi'), '').trim();
+      break;
+    }
+  }
+
+  // Check for orientation flags
+  const orientationFlags = ['--portrait', '--landscape', '--square'];
+  for (const flag of orientationFlags) {
+    if (cleanPrompt.toLowerCase().includes(flag)) {
       orientation = flag.replace('--', '');
       cleanPrompt = cleanPrompt.replace(new RegExp(flag, 'gi'), '').trim();
       break;
     }
   }
 
-  // Parse model
-  for (const flag of modelFlags) {
-    if (prompt.toLowerCase().includes(flag)) {
-      model = flag.replace('--', '');
-      cleanPrompt = cleanPrompt.replace(new RegExp(flag, 'gi'), '').trim();
-      break;
-    }
-  }
-
-  return { orientation, model, cleanPrompt };
+  return { model, orientation, cleanPrompt };
 }
 
-// Image generation with multiple providers
-async function generateImage(prompt, orientation = 'square', model = 'pollinations') {
+// Image generation using Pollinations.ai with different models
+async function generateImage(prompt, model = 'flux', orientation = 'square') {
   const encodedPrompt = encodeURIComponent(prompt);
   const { width, height } = ORIENTATIONS[orientation];
+  const modelParam = IMAGE_MODELS[model].param;
   
-  let imageUrl;
-  
-  switch (model) {
-    case 'flux':
-      // Flux model via Pollinations
-      imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=flux&nologo=true&enhance=true`;
-      break;
-      
-    case 'nanobanana':
-      // Nanobanana model via Pollinations
-      imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=nanobanana&nologo=true&enhance=true`;
-      break;
-      
-    case 'seedream':
-      // Seedream model via Pollinations
-      imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=seedream&nologo=true&enhance=true`;
-      break;
-      
-    case 'gptimage':
-      // GPT Image model via Pollinations
-      imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=gptimage&nologo=true&enhance=true`;
-      break;
-      
-    case 'pollinations':
-    default:
-      // Default Pollinations model
-      imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&nologo=true&enhance=true`;
-      break;
-  }
-  
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${modelParam}&nologo=true&enhance=true&seed=${Date.now()}`;
   return imageUrl;
 }
 
@@ -258,26 +227,22 @@ client.on('ready', () => {
   console.log(`✅ Bot is online: ${client.user.tag}`);
   console.log(`🤖 Model: gemini-2.5-flash`);
   console.log(`👁️ Vision: Enabled`);
-  console.log(`🎨 Image Generation: Enabled (Multiple providers)`);
+  console.log(`🎨 Image Generation: Enabled (Pollinations.ai)`);
   console.log(`🎬 Video Generation: Enabled (5 free per user)`);
-  console.log(`📱 User Install: Enabled`);
-  console.log(`💬 DM Support: Enabled`);
   console.log(`\n📋 Image commands:`);
   console.log(`   /create <description> [--model] [--orientation]`);
   console.log(`   /imagine <description> [--model] [--orientation]`);
-  console.log(`\n🎨 Available models:`);
-  console.log(`   --flux (⚡ Photorealistic)`);
-  console.log(`   --nanobanana (🍌 Artistic)`);
-  console.log(`   --seedream (🌙 Surreal)`);
-  console.log(`   --gptimage (🤖 AI-enhanced)`);
-  console.log(`   --pollinations (🌸 Default)`);
-  console.log(`\n🎬 Video commands:`);
-  console.log(`   /video <description>`);
-  console.log(`   /animate <description>`);
+  console.log(`\n🎨 Available Models:`);
+  Object.entries(IMAGE_MODELS).forEach(([key, model]) => {
+    console.log(`   ${model.emoji} --${key}: ${model.description}`);
+  });
   console.log(`\n📐 Orientations:`);
   console.log(`   --portrait  (768x1344)`);
   console.log(`   --landscape (1344x768)`);
   console.log(`   --square    (1024x1024) [default]`);
+  console.log(`\n🎬 Video commands:`);
+  console.log(`   /video <description>`);
+  console.log(`   /animate <description>`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -300,46 +265,6 @@ client.on('messageCreate', async (message) => {
     const history = conversationHistory.get(historyKey);
 
     let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
-
-    // CHECK /MODELS COMMAND
-    if (userMessage.toLowerCase() === '/models' || userMessage.toLowerCase() === '/styles') {
-      const embed = new EmbedBuilder()
-        .setTitle('🎨 Available Image Generation Models')
-        .setDescription('Choose different AI models for various artistic styles!')
-        .addFields(
-          { 
-            name: `${IMAGE_MODELS.flux.emoji} Flux (--flux)`, 
-            value: IMAGE_MODELS.flux.description,
-            inline: false
-          },
-          { 
-            name: `${IMAGE_MODELS.nanobanana.emoji} Nanobanana (--nanobanana)`, 
-            value: IMAGE_MODELS.nanobanana.description,
-            inline: false
-          },
-          { 
-            name: `${IMAGE_MODELS.seedream.emoji} Seedream (--seedream)`, 
-            value: IMAGE_MODELS.seedream.description,
-            inline: false
-          },
-          { 
-            name: `${IMAGE_MODELS.gptimage.emoji} GPT Image (--gptimage)`, 
-            value: IMAGE_MODELS.gptimage.description,
-            inline: false
-          },
-          { 
-            name: `${IMAGE_MODELS.pollinations.emoji} Pollinations (--pollinations)`, 
-            value: IMAGE_MODELS.pollinations.description + ' [DEFAULT]',
-            inline: false
-          }
-        )
-        .setColor(0x00D9FF)
-        .setFooter({ text: 'Use: /create <description> --flux --landscape' })
-        .setTimestamp();
-      
-      await message.reply({ embeds: [embed] });
-      return;
-    }
 
     // CHECK VIDEO GENERATION COMMANDS
     const videoCommands = ['/video', '/animate', '/vid'];
@@ -367,7 +292,7 @@ client.on('messageCreate', async (message) => {
       try {
         const enhancedPrompt = await enhancePrompt(prompt, true);
         console.log('⚠️ Generating static image instead of video (free API limitation)');
-        const imageUrl = await generateImage(enhancedPrompt, 'landscape');
+        const imageUrl = await generateImage(enhancedPrompt, 'flux', 'landscape');
 
         console.log('📥 Downloading image...');
         const imageResponse = await fetch(imageUrl);
@@ -419,22 +344,26 @@ client.on('messageCreate', async (message) => {
       const promptWithFlags = userMessage.split(' ').slice(1).join(' ').trim();
       
       if (!promptWithFlags) {
-        await message.reply('❌ Please provide a description for the image!\n\n**Usage:**\n`/create <description> [--model] [--orientation]`\n\n**Examples:**\n`/create a cat wearing sunglasses --flux --portrait`\n`/imagine cyberpunk city at night --seedream --landscape`\n`/create beautiful sunset --nanobanana --square`\n\n**Models:**\n⚡ `--flux` (Photorealistic)\n🍌 `--nanobanana` (Artistic)\n🌙 `--seedream` (Surreal)\n🤖 `--gptimage` (AI-enhanced)\n🌸 `--pollinations` (Default)\n\n**Orientations:**\n📱 `--portrait` (768x1344)\n🖼️ `--landscape` (1344x768)\n⬛ `--square` (1024x1024) [default]\n\n💡 Use `/models` to see all available models!');
+        const modelsList = Object.entries(IMAGE_MODELS)
+          .map(([key, model]) => `${model.emoji} \`--${key}\`: ${model.description}`)
+          .join('\n');
+        
+        await message.reply(`❌ Please provide a description for the image!\n\n**Usage:**\n\`/create <description> [--model] [--orientation]\`\n\n**Examples:**\n\`/create a cat wearing sunglasses --flux --portrait\`\n\`/imagine cyberpunk city at night --turbo --landscape\`\n\`/create beautiful sunset --klein --square\`\n\n**🎨 Models:**\n${modelsList}\n\n**📐 Orientations:**\n📱 \`--portrait\` (768x1344)\n🖼️ \`--landscape\` (1344x768)\n⬛ \`--square\` (1024x1024) [default]\n\n💡 **New!** Use \`/video <description>\` to create videos!`);
         return;
       }
 
       // Parse model, orientation and clean prompt
-      const { orientation, model, cleanPrompt } = parseFlags(promptWithFlags);
+      const { model, orientation, cleanPrompt } = parseImageFlags(promptWithFlags);
       const { width, height, emoji } = ORIENTATIONS[orientation];
       const modelInfo = IMAGE_MODELS[model];
 
-      console.log(`🎨 Generating ${orientation} image (${width}x${height}) with ${modelInfo.name} from prompt: "${cleanPrompt}"`);
+      console.log(`🎨 Generating ${orientation} image (${width}x${height}) using ${modelInfo.name} from prompt: "${cleanPrompt}"`);
       
-      const processingMsg = await message.reply(`${modelInfo.emoji} Creating **${modelInfo.name}** image ${emoji} (${width}x${height})... Please wait!`);
+      const processingMsg = await message.reply(`🎨 Creating ${emoji} **${orientation}** image with ${modelInfo.emoji} **${modelInfo.name}** (${width}x${height})... Please wait!`);
 
       try {
         const enhancedPrompt = await enhancePrompt(cleanPrompt, false);
-        const imageUrl = await generateImage(enhancedPrompt, orientation, model);
+        const imageUrl = await generateImage(enhancedPrompt, model, orientation);
 
         const imageResponse = await fetch(imageUrl);
         const imageBuffer = await imageResponse.arrayBuffer();
@@ -443,10 +372,10 @@ client.on('messageCreate', async (message) => {
         });
 
         const embed = new EmbedBuilder()
-          .setTitle(`${modelInfo.emoji} ${modelInfo.name} - ${emoji} ${orientation.toUpperCase()}`)
-          .setDescription(`**Original:** ${cleanPrompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 180)}${enhancedPrompt.length > 180 ? '...' : ''}\n**Model:** ${modelInfo.name} (${modelInfo.description})\n**Size:** ${width}x${height}`)
+          .setTitle(`🎨 AI Generated Image ${emoji}`)
+          .setDescription(`**Original:** ${cleanPrompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 200)}${enhancedPrompt.length > 200 ? '...' : ''}\n**Model:** ${modelInfo.emoji} ${modelInfo.name} (${modelInfo.quality})\n**Orientation:** ${emoji} ${orientation.toUpperCase()} (${width}x${height})`)
           .setImage('attachment://generated-image.png')
-          .setColor(modelInfo.color)
+          .setColor(0x00D9FF)
           .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
           .setTimestamp();
 
@@ -466,12 +395,41 @@ client.on('messageCreate', async (message) => {
       }
     }
 
+    // CHECK MODELS COMMAND
+    if (userMessage.toLowerCase() === '/models' || userMessage.toLowerCase() === '/help') {
+      const modelsList = Object.entries(IMAGE_MODELS)
+        .map(([key, model]) => `${model.emoji} **${model.name}** (\`--${key}\`)\n└ ${model.description} • Quality: ${model.quality}`)
+        .join('\n\n');
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🎨 Available Image Models')
+        .setDescription(modelsList)
+        .addFields(
+          { 
+            name: '📐 Orientations', 
+            value: '📱 `--portrait` (768x1344)\n🖼️ `--landscape` (1344x768)\n⬛ `--square` (1024x1024)', 
+            inline: true 
+          },
+          { 
+            name: '💡 Examples', 
+            value: '`/create sunset --flux --landscape`\n`/imagine cat --turbo --portrait`\n`/create art --klein --square`', 
+            inline: true 
+          }
+        )
+        .setColor(0x00D9FF)
+        .setFooter({ text: 'Mix and match models with orientations!' })
+        .setTimestamp();
+      
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
     // CHECK QUOTA COMMAND
     if (userMessage.toLowerCase() === '/quota' || userMessage.toLowerCase() === '/usage') {
       const quota = checkVideoQuota(message.author.id);
       const embed = new EmbedBuilder()
         .setTitle('📊 Your Usage Statistics')
-        .setDescription(`**Video Generation:**\n🎬 Used: ${quota.used}/${quota.total}\n✅ Remaining: ${quota.remaining}\n\n**Image Generation:**\n🎨 Unlimited! (5 models available)\n\n💡 Use \`/models\` to see all AI models\n💡 Use \`/video <description>\` to create videos\n💡 Use \`/create <description> --flux\` to create images`)
+        .setDescription(`**Video Generation:**\n🎬 Used: ${quota.used}/${quota.total}\n✅ Remaining: ${quota.remaining}\n\n**Image Generation:**\n🎨 Unlimited!\n\n💡 Use \`/video <description>\` to create videos\n💡 Use \`/create <description>\` to create images\n💡 Use \`/models\` to see available image models`)
         .setColor(0x00D9FF)
         .setFooter({ text: `User: ${message.author.username}` })
         .setTimestamp();
@@ -498,7 +456,7 @@ client.on('messageCreate', async (message) => {
 
     if (!userMessage && images.length === 0) {
       const quota = checkVideoQuota(message.author.id);
-      await message.reply(`What would you like to talk about? 🤔\n\n💡 **Commands:**\n🎨 \`/create <description>\` - Generate images (unlimited, 5 models)\n🖼️ \`/models\` - See all AI models\n🎬 \`/video <description>\` - Generate videos (${quota.remaining}/${quota.total} remaining)\n📊 \`/quota\` - Check your usage`);
+      await message.reply(`What would you like to talk about? 🤔\n\n💡 **Commands:**\n🎨 \`/create <description>\` - Generate images (unlimited)\n🎬 \`/video <description>\` - Generate videos (${quota.remaining}/${quota.total} remaining)\n📊 \`/quota\` - Check your usage\n🎨 \`/models\` - View available models`);
       return;
     }
 
