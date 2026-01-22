@@ -130,11 +130,33 @@ async function generateImage(prompt, orientation = 'square') {
   return imageUrl;
 }
 
-// Video generation using Pollinations.ai (Free, no API key needed)
+// Video generation using free services
+// NOTE: Free video generation is very limited. Consider these alternatives:
+// 1. Use paid APIs like Runway ML, Luma AI, or Stability AI
+// 2. Generate animated GIFs instead of videos
+// 3. Use image sequences to create videos locally
 async function generateVideo(prompt) {
+  // For now, we'll generate a high-quality image
+  // You can replace this with actual video API when you have credits
   const encodedPrompt = encodeURIComponent(prompt);
-  const videoUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=576&model=flux&nologo=true&enhance=true&format=mp4`;
+  
+  // Option 1: Return animated GIF URL (if service supports it)
+  // This is a placeholder - you need to integrate with a real video/GIF API
+  const videoUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=576&nologo=true&enhance=true&seed=${Date.now()}`;
+  
   return videoUrl;
+}
+
+// Alternative: Generate image sequence for video (requires ffmpeg)
+// You would need to generate multiple frames and combine them
+async function generateImageSequence(prompt, frames = 24) {
+  const images = [];
+  for (let i = 0; i < frames; i++) {
+    const seed = Date.now() + i;
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?seed=${seed}&nologo=true&enhance=true`;
+    images.push(url);
+  }
+  return images;
 }
 
 // Enhance prompt using Gemini
@@ -245,41 +267,49 @@ client.on('messageCreate', async (message) => {
         // Enhance prompt with Gemini
         const enhancedPrompt = await enhancePrompt(prompt, true);
         
-        // Generate video
-        const videoUrl = await generateVideo(enhancedPrompt);
+        // TEMPORARY: Generate image instead of video due to API limitations
+        // Free video APIs are very limited. Consider these paid options:
+        // - Runway ML API (https://runwayml.com)
+        // - Luma AI Dream Machine (https://lumalabs.ai)
+        // - Stability AI Video (https://stability.ai)
+        
+        console.log('⚠️ Generating static image instead of video (free API limitation)');
+        const imageUrl = await generateImage(enhancedPrompt, 'landscape');
 
-        // Download video to send as attachment
-        console.log('📥 Downloading video...');
-        const videoResponse = await fetch(videoUrl);
-        const videoBuffer = await videoResponse.arrayBuffer();
-        const attachment = new AttachmentBuilder(Buffer.from(videoBuffer), { 
-          name: 'generated-video.mp4' 
+        // Download image to send as attachment
+        console.log('📥 Downloading image...');
+        const imageResponse = await fetch(imageUrl);
+        const imageBuffer = await imageResponse.arrayBuffer();
+        const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { 
+          name: 'generated-video-frame.png' 
         });
 
         // Update quota
         incrementVideoUsage(message.author.id);
         const newQuota = checkVideoQuota(message.author.id);
 
-        // Create beautiful embed
+        // Create embed with explanation
         const embed = new EmbedBuilder()
-          .setTitle('🎬 AI Generated Video!')
-          .setDescription(`**Original:** ${prompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 150)}${enhancedPrompt.length > 150 ? '...' : ''}\n\n**Quota Used:** ${newQuota.used}/${newQuota.total} | **Remaining:** ${newQuota.remaining} videos`)
+          .setTitle('🎨 AI Generated Image (Video Mode)')
+          .setDescription(`**Original:** ${prompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 150)}${enhancedPrompt.length > 150 ? '...' : ''}\n\n⚠️ **Note:** Free video APIs are limited. This is a high-quality image representation.\n\n**Suggested Paid APIs for Real Videos:**\n• Runway ML\n• Luma AI Dream Machine\n• Stability AI Video\n\n**Quota Used:** ${newQuota.used}/${newQuota.total} | **Remaining:** ${newQuota.remaining}`)
+          .setImage('attachment://generated-video-frame.png')
           .setColor(0xFF6B6B)
           .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
           .setTimestamp();
 
         await processingMsg.delete();
         await message.reply({ 
+          content: '⚠️ **Video generation requires paid API.** Here\'s a high-quality image instead!',
           embeds: [embed], 
           files: [attachment]
         });
 
-        console.log(`✅ Video created successfully for: ${message.author.tag} (${newQuota.remaining} remaining)`);
+        console.log(`✅ Image (video mode) created for: ${message.author.tag} (${newQuota.remaining} remaining)`);
         
         if (newQuota.remaining === 0) {
-          await message.channel.send(`⚠️ **${message.author.username}**, you've used all your free videos! You can still generate unlimited images with \`/create\`.`);
+          await message.channel.send(`⚠️ **${message.author.username}**, you've used all your video attempts! You can still generate unlimited images with \`/create\`.`);
         } else if (newQuota.remaining === 1) {
-          await message.channel.send(`⚠️ **${message.author.username}**, you have **1 video** remaining!`);
+          await message.channel.send(`⚠️ **${message.author.username}**, you have **1 video attempt** remaining!`);
         }
         
         return;
