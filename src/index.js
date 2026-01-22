@@ -2,6 +2,8 @@ import { Client, GatewayIntentBits, Partials, EmbedBuilder, AttachmentBuilder } 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -49,6 +51,53 @@ const visionModel = genAI.getGenerativeModel({
 
 const conversationHistory = new Map();
 
+// Video generation tracking (5 free per user)
+const VIDEO_LIMIT = 5;
+const videoUsage = new Map(); // userId -> count
+
+// Load video usage from file
+function loadVideoUsage() {
+  try {
+    if (fs.existsSync('video_usage.json')) {
+      const data = JSON.parse(fs.readFileSync('video_usage.json', 'utf8'));
+      Object.entries(data).forEach(([userId, count]) => {
+        videoUsage.set(userId, count);
+      });
+      console.log('📊 Loaded video usage data');
+    }
+  } catch (error) {
+    console.error('Error loading video usage:', error);
+  }
+}
+
+// Save video usage to file
+function saveVideoUsage() {
+  try {
+    const data = Object.fromEntries(videoUsage);
+    fs.writeFileSync('video_usage.json', JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('Error saving video usage:', error);
+  }
+}
+
+// Check and update video quota
+function checkVideoQuota(userId) {
+  const currentUsage = videoUsage.get(userId) || 0;
+  const remaining = VIDEO_LIMIT - currentUsage;
+  return {
+    canGenerate: remaining > 0,
+    used: currentUsage,
+    remaining: remaining,
+    total: VIDEO_LIMIT
+  };
+}
+
+function incrementVideoUsage(userId) {
+  const current = videoUsage.get(userId) || 0;
+  videoUsage.set(userId, current + 1);
+  saveVideoUsage();
+}
+
 // Image orientation presets
 const ORIENTATIONS = {
   portrait: { width: 768, height: 1344, emoji: '📱' },
@@ -81,11 +130,19 @@ async function generateImage(prompt, orientation = 'square') {
   return imageUrl;
 }
 
+// Video generation using Pollinations.ai (Free, no API key needed)
+async function generateVideo(prompt) {
+  const encodedPrompt = encodeURIComponent(prompt);
+  const videoUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=576&model=flux&nologo=true&enhance=true&format=mp4`;
+  return videoUrl;
+}
+
 // Enhance prompt using Gemini
-async function enhancePrompt(userPrompt) {
+async function enhancePrompt(userPrompt, isVideo = false) {
   try {
+    const mediaType = isVideo ? 'video' : 'image';
     const result = await textModel.generateContent(
-      `You are an expert at writing prompts for AI image generation. Improve the following prompt into professional, detailed English, including: subject, art style, colors, lighting, and quality. Return ONLY the enhanced English prompt, NO explanations.
+      `You are an expert at writing prompts for AI ${mediaType} generation. Improve the following prompt into professional, detailed English, including: subject, ${isVideo ? 'motion, camera movement, scene transitions,' : 'art style,'} colors, lighting, and quality. Return ONLY the enhanced English prompt, NO explanations.
 
 Original prompt: "${userPrompt}"
 
@@ -118,15 +175,21 @@ async function urlToGenerativePart(url, mimeType) {
 }
 
 client.on('ready', () => {
+  loadVideoUsage(); // Load video usage on startup
+  
   console.log(`✅ Bot is online: ${client.user.tag}`);
   console.log(`🤖 Model: gemini-2.5-flash`);
   console.log(`👁️ Vision: Enabled`);
   console.log(`🎨 Image Generation: Enabled (Pollinations.ai)`);
+  console.log(`🎬 Video Generation: Enabled (5 free per user)`);
   console.log(`📱 User Install: Enabled`);
   console.log(`💬 DM Support: Enabled`);
   console.log(`\n📋 Image commands:`);
   console.log(`   /create <description> [--portrait|--landscape|--square]`);
   console.log(`   /imagine <description> [--portrait|--landscape|--square]`);
+  console.log(`\n🎬 Video commands:`);
+  console.log(`   /video <description>`);
+  console.log(`   /animate <description>`);
   console.log(`\n📐 Orientations:`);
   console.log(`   --portrait  (768x1344)`);
   console.log(`   --landscape (1344x768)`);
@@ -154,6 +217,80 @@ client.on('messageCreate', async (message) => {
 
     let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
 
+    // CHECK VIDEO GENERATION COMMANDS
+    const videoCommands = ['/video', '/animate', '/vid'];
+    const isVideoCommand = videoCommands.some(cmd => userMessage.toLowerCase().startsWith(cmd));
+
+    if (isVideoCommand) {
+      const prompt = userMessage.split(' ').slice(1).join(' ').trim();
+      
+      if (!prompt) {
+        const quota = checkVideoQuota(message.author.id);
+        await message.reply(`❌ Please provide a description for the video!\n\n**Usage:**\n\`/video <description>\`\n\n**Examples:**\n\`/video a cat walking in a futuristic city\`\n\`/animate ocean waves at sunset\`\n\n**Your Quota:** ${quota.used}/${quota.total} videos used | ${quota.remaining} remaining`);
+        return;
+      }
+
+      // Check quota
+      const quota = checkVideoQuota(message.author.id);
+      if (!quota.canGenerate) {
+        await message.reply(`❌ **Video Limit Reached!**\n\nYou've used all ${VIDEO_LIMIT} free videos.\n\n**Your Usage:** ${quota.used}/${quota.total}\n\n💡 **Tip:** You can still generate unlimited images with \`/create\`!`);
+        return;
+      }
+
+      console.log(`🎬 Generating video from prompt: "${prompt}" (User: ${message.author.tag}, ${quota.remaining} remaining)`);
+      
+      const processingMsg = await message.reply(`🎬 Creating video... Please wait! This may take 30-60 seconds.\n\n**Your Quota:** ${quota.used}/${quota.total} used | ${quota.remaining} videos remaining`);
+
+      try {
+        // Enhance prompt with Gemini
+        const enhancedPrompt = await enhancePrompt(prompt, true);
+        
+        // Generate video
+        const videoUrl = await generateVideo(enhancedPrompt);
+
+        // Download video to send as attachment
+        console.log('📥 Downloading video...');
+        const videoResponse = await fetch(videoUrl);
+        const videoBuffer = await videoResponse.arrayBuffer();
+        const attachment = new AttachmentBuilder(Buffer.from(videoBuffer), { 
+          name: 'generated-video.mp4' 
+        });
+
+        // Update quota
+        incrementVideoUsage(message.author.id);
+        const newQuota = checkVideoQuota(message.author.id);
+
+        // Create beautiful embed
+        const embed = new EmbedBuilder()
+          .setTitle('🎬 AI Generated Video!')
+          .setDescription(`**Original:** ${prompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 150)}${enhancedPrompt.length > 150 ? '...' : ''}\n\n**Quota Used:** ${newQuota.used}/${newQuota.total} | **Remaining:** ${newQuota.remaining} videos`)
+          .setColor(0xFF6B6B)
+          .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
+          .setTimestamp();
+
+        await processingMsg.delete();
+        await message.reply({ 
+          embeds: [embed], 
+          files: [attachment]
+        });
+
+        console.log(`✅ Video created successfully for: ${message.author.tag} (${newQuota.remaining} remaining)`);
+        
+        if (newQuota.remaining === 0) {
+          await message.channel.send(`⚠️ **${message.author.username}**, you've used all your free videos! You can still generate unlimited images with \`/create\`.`);
+        } else if (newQuota.remaining === 1) {
+          await message.channel.send(`⚠️ **${message.author.username}**, you have **1 video** remaining!`);
+        }
+        
+        return;
+
+      } catch (error) {
+        console.error('❌ Error creating video:', error);
+        await processingMsg.edit('⚠️ An error occurred while creating the video. Please try again! Your quota was not used.');
+        return;
+      }
+    }
+
     // CHECK IMAGE GENERATION COMMANDS
     const imageCommands = ['/create', '/imagine', '/draw', '/gen'];
     const isImageCommand = imageCommands.some(cmd => userMessage.toLowerCase().startsWith(cmd));
@@ -162,7 +299,7 @@ client.on('messageCreate', async (message) => {
       const promptWithFlags = userMessage.split(' ').slice(1).join(' ').trim();
       
       if (!promptWithFlags) {
-        await message.reply('❌ Please provide a description for the image!\n\n**Usage:**\n`/create <description> [--portrait|--landscape|--square]`\n\n**Examples:**\n`/create a cat wearing sunglasses on the moon --portrait`\n`/imagine cyberpunk city at night --landscape`\n`/create beautiful sunset --square`\n\n**Orientations:**\n📱 `--portrait` (768x1344)\n🖼️ `--landscape` (1344x768)\n⬛ `--square` (1024x1024) [default]');
+        await message.reply('❌ Please provide a description for the image!\n\n**Usage:**\n`/create <description> [--portrait|--landscape|--square]`\n\n**Examples:**\n`/create a cat wearing sunglasses on the moon --portrait`\n`/imagine cyberpunk city at night --landscape`\n`/create beautiful sunset --square`\n\n**Orientations:**\n📱 `--portrait` (768x1344)\n🖼️ `--landscape` (1344x768)\n⬛ `--square` (1024x1024) [default]\n\n💡 **New!** Use `/video <description>` to create videos!');
         return;
       }
 
@@ -176,7 +313,7 @@ client.on('messageCreate', async (message) => {
 
       try {
         // Enhance prompt with Gemini
-        const enhancedPrompt = await enhancePrompt(cleanPrompt);
+        const enhancedPrompt = await enhancePrompt(cleanPrompt, false);
         
         // Generate image with orientation
         const imageUrl = await generateImage(enhancedPrompt, orientation);
@@ -213,6 +350,20 @@ client.on('messageCreate', async (message) => {
       }
     }
 
+    // CHECK QUOTA COMMAND
+    if (userMessage.toLowerCase() === '/quota' || userMessage.toLowerCase() === '/usage') {
+      const quota = checkVideoQuota(message.author.id);
+      const embed = new EmbedBuilder()
+        .setTitle('📊 Your Usage Statistics')
+        .setDescription(`**Video Generation:**\n🎬 Used: ${quota.used}/${quota.total}\n✅ Remaining: ${quota.remaining}\n\n**Image Generation:**\n🎨 Unlimited!\n\n💡 Use \`/video <description>\` to create videos\n💡 Use \`/create <description>\` to create images`)
+        .setColor(0x00D9FF)
+        .setFooter({ text: `User: ${message.author.username}` })
+        .setTimestamp();
+      
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
     // HANDLE IMAGE ATTACHMENTS (Vision)
     const hasImage = message.attachments.size > 0;
     const images = [];
@@ -230,7 +381,8 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!userMessage && images.length === 0) {
-      await message.reply('What would you like to talk about? 🤔\n\n💡 **Tip:** Use `/create <description> [--portrait|--landscape|--square]` to generate AI images!\n\n**Examples:**\n`/create a cat in space --portrait`\n`/imagine sunset beach --landscape`');
+      const quota = checkVideoQuota(message.author.id);
+      await message.reply(`What would you like to talk about? 🤔\n\n💡 **Commands:**\n🎨 \`/create <description>\` - Generate images (unlimited)\n🎬 \`/video <description>\` - Generate videos (${quota.remaining}/${quota.total} remaining)\n📊 \`/quota\` - Check your usage`);
       return;
     }
 
