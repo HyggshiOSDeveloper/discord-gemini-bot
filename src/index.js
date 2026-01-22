@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
@@ -20,10 +20,14 @@ const client = new Client({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Model cho text
 const textModel = genAI.getGenerativeModel({ 
   model: 'gemini-2.5-flash',
-  systemInstruction: 'You are a friendly AI assistant named Hyggshi OS AI. You respond naturally and clearly. You can see and analyze images when users send them.',
+  systemInstruction: `You are a friendly AI assistant named Hyggshi OS AI. Respond naturally and helpfully. You can see and analyze images when users send them.
+
+IMPORTANT - Image creation commands:
+- When users want to create images, they use: "/create <description>" or "/imagine <description>"
+- Example: "/create a cat wearing glasses" or "/imagine sunset on beach"
+- You DON'T need to process these commands, just respond normally to other topics.`,
   generationConfig: {
     temperature: 1.0,
     topP: 0.95,
@@ -32,10 +36,9 @@ const textModel = genAI.getGenerativeModel({
   }
 });
 
-// Model cho vision (text + ảnh)
 const visionModel = genAI.getGenerativeModel({ 
   model: 'gemini-2.5-flash',
-  systemInstruction: 'You are an AI assistant capable of seeing and analyzing images. Describe in detail what you see in the image, including: the main subject, colors, background, emotions, and any interesting details.',
+  systemInstruction: 'You are an AI assistant with the ability to see and analyze images. Describe in detail what you see, including: main subjects, colors, context, emotions, and any interesting details.',
   generationConfig: {
     temperature: 1.0,
     topP: 0.95,
@@ -45,7 +48,33 @@ const visionModel = genAI.getGenerativeModel({
 
 const conversationHistory = new Map();
 
-// Hàm chuyển đổi ảnh URL thành format Gemini
+// Image generation using Pollinations.ai (Free, no API key needed)
+async function generateImage(prompt) {
+  const encodedPrompt = encodeURIComponent(prompt);
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true`;
+  return imageUrl;
+}
+
+// Enhance prompt using Gemini
+async function enhancePrompt(userPrompt) {
+  try {
+    const result = await textModel.generateContent(
+      `You are an expert at writing prompts for AI image generation. Improve the following prompt into professional, detailed English, including: subject, art style, colors, lighting, and quality. Return ONLY the enhanced English prompt, NO explanations.
+
+Original prompt: "${userPrompt}"
+
+Enhanced prompt:`
+    );
+    const enhanced = result.response.text().trim();
+    console.log(`📝 Original prompt: "${userPrompt}"`);
+    console.log(`✨ Enhanced prompt: "${enhanced}"`);
+    return enhanced;
+  } catch (error) {
+    console.error('Error enhancing prompt, using original');
+    return userPrompt;
+  }
+}
+
 async function urlToGenerativePart(url, mimeType) {
   try {
     const response = await fetch(url);
@@ -57,17 +86,19 @@ async function urlToGenerativePart(url, mimeType) {
       }
     };
   } catch (error) {
-    console.error('Lỗi khi tải ảnh:', error);
+    console.error('Error loading image:', error);
     return null;
   }
 }
 
 client.on('ready', () => {
-  console.log(`✅ Bot đã online: ${client.user.tag}`);
-  console.log(`🤖 Model: gemini-1.5-flash`);
+  console.log(`✅ Bot is online: ${client.user.tag}`);
+  console.log(`🤖 Model: gemini-2.5-flash`);
   console.log(`👁️ Vision: Enabled`);
+  console.log(`🎨 Image Generation: Enabled (Pollinations.ai)`);
   console.log(`📱 User Install: Enabled`);
   console.log(`💬 DM Support: Enabled`);
+  console.log(`\n📋 Image commands: /create <description> or /imagine <description>`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -91,15 +122,69 @@ client.on('messageCreate', async (message) => {
 
     let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
 
-    // Kiểm tra có ảnh không
+    // CHECK IMAGE GENERATION COMMANDS
+    const imageCommands = ['/create', '/imagine', '/draw', '/gen'];
+    const isImageCommand = imageCommands.some(cmd => userMessage.toLowerCase().startsWith(cmd));
+
+    if (isImageCommand) {
+      const prompt = userMessage.split(' ').slice(1).join(' ').trim();
+      
+      if (!prompt) {
+        await message.reply('❌ Please provide a description for the image!\n\n**Usage:**\n`/create <description>`\n\n**Examples:**\n`/create a cat wearing sunglasses on the moon`\n`/imagine cyberpunk city at night`');
+        return;
+      }
+
+      console.log(`🎨 Generating image from prompt: "${prompt}"`);
+      
+      const processingMsg = await message.reply('🎨 Creating image... Please wait!');
+
+      try {
+        // Enhance prompt with Gemini
+        const enhancedPrompt = await enhancePrompt(prompt);
+        
+        // Generate image
+        const imageUrl = await generateImage(enhancedPrompt);
+
+        // Download image to send as attachment
+        const imageResponse = await fetch(imageUrl);
+        const imageBuffer = await imageResponse.arrayBuffer();
+        const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { 
+          name: 'generated-image.png' 
+        });
+
+        // Create beautiful embed
+        const embed = new EmbedBuilder()
+          .setTitle('🎨 AI Generated Image!')
+          .setDescription(`**Original:** ${prompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 200)}${enhancedPrompt.length > 200 ? '...' : ''}`)
+          .setImage('attachment://generated-image.png')
+          .setColor(0x00D9FF)
+          .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
+          .setTimestamp();
+
+        await processingMsg.delete();
+        await message.reply({ 
+          embeds: [embed], 
+          files: [attachment]
+        });
+
+        console.log(`✅ Image created successfully for: ${message.author.tag}`);
+        return;
+
+      } catch (error) {
+        console.error('❌ Error creating image:', error);
+        await processingMsg.edit('⚠️ An error occurred while creating the image. Please try again!');
+        return;
+      }
+    }
+
+    // HANDLE IMAGE ATTACHMENTS (Vision)
     const hasImage = message.attachments.size > 0;
     const images = [];
     
     if (hasImage) {
       for (const attachment of message.attachments.values()) {
-        // Kiểm tra file type
         if (attachment.contentType?.startsWith('image/')) {
-          console.log(`🖼️ Đang xử lý ảnh: ${attachment.name} (${attachment.contentType})`);
+          console.log(`🖼️ Processing image: ${attachment.name}`);
           const imagePart = await urlToGenerativePart(attachment.url, attachment.contentType);
           if (imagePart) {
             images.push(imagePart);
@@ -108,45 +193,43 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // Nếu không có text và không có ảnh
     if (!userMessage && images.length === 0) {
-      await message.reply('Bạn muốn nói gì với mình? 🤔');
+      await message.reply('What would you like to talk about? 🤔\n\n💡 **Tip:** Use `/create <description>` to generate AI images!');
       return;
     }
 
-    // Nếu có ảnh nhưng không có text, thêm prompt mặc định
     if (images.length > 0 && !userMessage) {
-      userMessage = 'Hãy phân tích và mô tả chi tiết hình ảnh này';
+      userMessage = 'Please analyze and describe this image in detail';
     }
 
-    // Xử lý reply
+    // Handle replies
     if (isReply) {
       try {
         const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
-        const repliedContent = repliedMessage.content || '[Tin nhắn không có nội dung]';
+        const repliedContent = repliedMessage.content || '[Message has no content]';
         const repliedAuthor = repliedMessage.author.username;
-        userMessage = `Người dùng đang trả lời tin nhắn của ${repliedAuthor}: "${repliedContent}"\n\nVà họ nói: ${userMessage}`;
+        userMessage = `User is replying to ${repliedAuthor}'s message: "${repliedContent}"\n\nAnd they say: ${userMessage}`;
       } catch (err) {
-        console.log('Không thể fetch tin nhắn được reply');
+        console.log('Cannot fetch replied message');
       }
     }
 
     const context = isDM ? 'DM' : 'Server';
-    const imageInfo = images.length > 0 ? ` + ${images.length} ảnh` : '';
+    const imageInfo = images.length > 0 ? ` + ${images.length} image(s)` : '';
     console.log(`📨 [${context}] ${message.author.tag}: "${userMessage.substring(0, 50)}..."${imageInfo}`);
 
     let botReply;
 
-    // Nếu có ảnh, dùng vision model (không lưu lịch sử ảnh)
+    // HANDLE VISION
     if (images.length > 0) {
       const parts = [{ text: userMessage }, ...images];
       const result = await visionModel.generateContent(parts);
       const response = await result.response;
       botReply = response.text();
       
-      console.log(`✅ [VISION] Phản hồi: "${botReply.substring(0, 50)}..."`);
+      console.log(`✅ [VISION] Response: "${botReply.substring(0, 50)}..."`);
     } else {
-      // Không có ảnh, dùng text model với lịch sử
+      // HANDLE TEXT CONVERSATION
       history.push({
         role: 'user',
         parts: [{ text: userMessage }],
@@ -169,10 +252,10 @@ client.on('messageCreate', async (message) => {
         parts: [{ text: botReply }],
       });
 
-      console.log(`✅ [TEXT] Phản hồi: "${botReply.substring(0, 50)}..."`);
+      console.log(`✅ [TEXT] Response: "${botReply.substring(0, 50)}..."`);
     }
 
-    // Gửi phản hồi
+    // Send response
     if (botReply.length > 2000) {
       const chunks = botReply.match(/[\s\S]{1,2000}/g) || [];
       for (const chunk of chunks) {
@@ -183,22 +266,22 @@ client.on('messageCreate', async (message) => {
     }
 
   } catch (error) {
-    console.error('❌ Lỗi chi tiết:', error);
+    console.error('❌ Detailed error:', error);
     
-    let errorMessage = '⚠️ Xin lỗi, đã có lỗi xảy ra khi xử lý tin nhắn của bạn.';
+    let errorMessage = '⚠️ Sorry, an error occurred while processing your message.';
     
     if (error.message?.includes('API key')) {
-      errorMessage = '🔑 Lỗi API Key. Admin vui lòng kiểm tra lại!';
+      errorMessage = '🔑 API Key error. Please check configuration!';
     } else if (error.message?.includes('quota')) {
-      errorMessage = '⏰ API đã hết quota. Vui lòng thử lại sau!';
+      errorMessage = '⏰ API quota exceeded. Please try again later!';
     } else if (error.message?.includes('INVALID_ARGUMENT')) {
-      errorMessage = '🖼️ Lỗi xử lý hình ảnh. Vui lòng thử ảnh khác!';
+      errorMessage = '🖼️ Error processing image. Please try a different image!';
     }
     
     try {
       await message.reply(errorMessage);
     } catch (replyError) {
-      console.error('Không thể gửi tin nhắn lỗi:', replyError);
+      console.error('Cannot send error message:', replyError);
     }
   }
 });
@@ -212,8 +295,8 @@ process.on('unhandledRejection', error => {
 });
 
 client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log('🔐 Đang đăng nhập...'))
+  .then(() => console.log('🔐 Logging in...'))
   .catch(err => {
-    console.error('❌ Không thể login Discord:', err);
+    console.error('❌ Cannot login to Discord:', err);
     process.exit(1);
   });
