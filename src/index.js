@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
 import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -21,81 +22,14 @@ const client = new Client({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// NSFW Settings - Configure based on your needs
-const NSFW_CONFIG = {
-  // Allow NSFW in DMs? (true/false)
-  allowInDM: true,
-  
-  // Allow NSFW only in NSFW-marked channels? (true/false)
-  requireNSFWChannel: true,
-  
-  // Role ID that can use NSFW anywhere (optional, leave empty if not needed)
-  bypassRoleId: process.env.NSFW_BYPASS_ROLE_ID || '',
-  
-  // NSFW intensity levels
-  levels: {
-    soft: {
-      name: 'Soft NSFW',
-      flag: '--nsfw-soft',
-      emoji: '🔞',
-      description: 'Light suggestive content',
-      suffix: ', artistic, tasteful, suggestive but not explicit'
-    },
-    medium: {
-      name: 'Medium NSFW',
-      flag: '--nsfw',
-      emoji: '🔥',
-      description: 'Moderate adult content',
-      suffix: ', sensual, artistic nude, mature content'
-    },
-    hard: {
-      name: 'Hard NSFW',
-      flag: '--nsfw-hard',
-      emoji: '💀',
-      description: 'Explicit adult content',
-      suffix: ', explicit, uncensored, highly detailed NSFW'
-    }
-  }
-};
-
-// Check if user can use NSFW
-function canUseNSFW(message) {
-  const isDM = message.channel.type === 1;
-  
-  // In DMs
-  if (isDM) {
-    return {
-      allowed: NSFW_CONFIG.allowInDM,
-      reason: NSFW_CONFIG.allowInDM ? null : 'NSFW is disabled in DMs'
-    };
-  }
-  
-  // In server - check bypass role
-  if (NSFW_CONFIG.bypassRoleId && message.member?.roles.cache.has(NSFW_CONFIG.bypassRoleId)) {
-    return { allowed: true, reason: null };
-  }
-  
-  // In server - check NSFW channel
-  if (NSFW_CONFIG.requireNSFWChannel) {
-    const isNSFWChannel = message.channel.nsfw;
-    return {
-      allowed: isNSFWChannel,
-      reason: isNSFWChannel ? null : 'NSFW commands only work in NSFW-marked channels'
-    };
-  }
-  
-  return { allowed: true, reason: null };
-}
-
 const textModel = genAI.getGenerativeModel({ 
-  model: 'gemini-1.5-flash',
+  model: 'gemini-2.5-flash',
   systemInstruction: `You are a friendly AI assistant named Hyggshi OS AI. Respond naturally and helpfully. You can see and analyze images when users send them.
 
 IMPORTANT - Image creation commands:
-- Users can create images with: "/create <description>" or "/imagine <description>"
+- When users want to create images, they use: "/create <description>" or "/imagine <description>"
 - They can add model flags: --flux, --turbo, --klein, --gptimage
 - They can add orientation flags: --portrait, --landscape, --square
-- They can add NSFW flags: --nsfw-soft, --nsfw, --nsfw-hard (only in appropriate channels)
 - Example: "/create a cat wearing glasses --flux --portrait"
 - You DON'T need to process these commands, just respond normally to other topics.`,
   generationConfig: {
@@ -107,7 +41,7 @@ IMPORTANT - Image creation commands:
 });
 
 const visionModel = genAI.getGenerativeModel({ 
-  model: 'gemini-1.5-flash',
+  model: 'gemini-2.5-flash',
   systemInstruction: 'You are an AI assistant with the ability to see and analyze images. Describe in detail what you see, including: main subjects, colors, context, emotions, and any interesting details.',
   generationConfig: {
     temperature: 1.0,
@@ -117,9 +51,12 @@ const visionModel = genAI.getGenerativeModel({
 });
 
 const conversationHistory = new Map();
+
+// Video generation tracking (5 free per user)
 const VIDEO_LIMIT = 5;
 const videoUsage = new Map();
 
+// Load video usage from file
 function loadVideoUsage() {
   try {
     if (fs.existsSync('video_usage.json')) {
@@ -134,6 +71,7 @@ function loadVideoUsage() {
   }
 }
 
+// Save video usage to file
 function saveVideoUsage() {
   try {
     const data = Object.fromEntries(videoUsage);
@@ -143,6 +81,7 @@ function saveVideoUsage() {
   }
 }
 
+// Check and update video quota
 function checkVideoQuota(userId) {
   const currentUsage = videoUsage.get(userId) || 0;
   const remaining = VIDEO_LIMIT - currentUsage;
@@ -160,6 +99,7 @@ function incrementVideoUsage(userId) {
   saveVideoUsage();
 }
 
+// Image models available on Pollinations.ai
 const IMAGE_MODELS = {
   flux: { 
     name: 'Flux', 
@@ -191,32 +131,23 @@ const IMAGE_MODELS = {
   }
 };
 
+// Image orientation presets
 const ORIENTATIONS = {
   portrait: { width: 768, height: 1344, emoji: '📱' },
   landscape: { width: 1344, height: 768, emoji: '🖼️' },
   square: { width: 1024, height: 1024, emoji: '⬛' },
 };
 
-// Parse model, orientation, and NSFW flags from prompt
+// Parse model and orientation from prompt
 function parseImageFlags(prompt) {
-  let model = 'flux';
-  let orientation = 'square';
-  let nsfwLevel = null;
+  let model = 'flux'; // default
+  let orientation = 'square'; // default
   let cleanPrompt = prompt;
-
-  // Check for NSFW flags
-  for (const [level, config] of Object.entries(NSFW_CONFIG.levels)) {
-    if (cleanPrompt.toLowerCase().includes(config.flag)) {
-      nsfwLevel = level;
-      cleanPrompt = cleanPrompt.replace(new RegExp(config.flag, 'gi'), '').trim();
-      break;
-    }
-  }
 
   // Check for model flags
   for (const [key, value] of Object.entries(IMAGE_MODELS)) {
     const flag = `--${key}`;
-    if (cleanPrompt.toLowerCase().includes(flag)) {
+    if (prompt.toLowerCase().includes(flag)) {
       model = key;
       cleanPrompt = cleanPrompt.replace(new RegExp(flag, 'gi'), '').trim();
       break;
@@ -233,35 +164,32 @@ function parseImageFlags(prompt) {
     }
   }
 
-  return { model, orientation, nsfwLevel, cleanPrompt };
+  return { model, orientation, cleanPrompt };
 }
 
-async function generateImage(prompt, model = 'flux', orientation = 'square', nsfwLevel = null) {
-  let finalPrompt = prompt;
-  
-  // Add NSFW suffix if level is specified
-  if (nsfwLevel && NSFW_CONFIG.levels[nsfwLevel]) {
-    finalPrompt += NSFW_CONFIG.levels[nsfwLevel].suffix;
-  }
-  
-  const encodedPrompt = encodeURIComponent(finalPrompt);
+// Image generation using Pollinations.ai with different models
+async function generateImage(prompt, model = 'flux', orientation = 'square') {
+  const encodedPrompt = encodeURIComponent(prompt);
   const { width, height } = ORIENTATIONS[orientation];
   const modelParam = IMAGE_MODELS[model].param;
   
-  // Add nologo and private flags for NSFW content
-  const nsfwParams = nsfwLevel ? '&private=true' : '';
-  
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${modelParam}&nologo=true&enhance=true&seed=${Date.now()}${nsfwParams}`;
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${modelParam}&nologo=true&enhance=true&seed=${Date.now()}`;
   return imageUrl;
 }
 
-async function enhancePrompt(userPrompt, isVideo = false, nsfwLevel = null) {
+// Video generation using free services
+async function generateVideo(prompt) {
+  const encodedPrompt = encodeURIComponent(prompt);
+  const videoUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=576&nologo=true&enhance=true&seed=${Date.now()}`;
+  return videoUrl;
+}
+
+// Enhance prompt using Gemini
+async function enhancePrompt(userPrompt, isVideo = false) {
   try {
     const mediaType = isVideo ? 'video' : 'image';
-    const nsfwNote = nsfwLevel ? `\nIMPORTANT: This is ${NSFW_CONFIG.levels[nsfwLevel].name} content. Add appropriate mature/adult themes while keeping artistic quality.` : '';
-    
     const result = await textModel.generateContent(
-      `You are an expert at writing prompts for AI ${mediaType} generation. Improve the following prompt into professional, detailed English, including: subject, ${isVideo ? 'motion, camera movement, scene transitions,' : 'art style,'} colors, lighting, and quality.${nsfwNote} Return ONLY the enhanced English prompt, NO explanations.
+      `You are an expert at writing prompts for AI ${mediaType} generation. Improve the following prompt into professional, detailed English, including: subject, ${isVideo ? 'motion, camera movement, scene transitions,' : 'art style,'} colors, lighting, and quality. Return ONLY the enhanced English prompt, NO explanations.
 
 Original prompt: "${userPrompt}"
 
@@ -297,16 +225,24 @@ client.on('ready', () => {
   loadVideoUsage();
   
   console.log(`✅ Bot is online: ${client.user.tag}`);
-  console.log(`🤖 Model: gemini-1.5-flash`);
+  console.log(`🤖 Model: gemini-2.5-flash`);
   console.log(`👁️ Vision: Enabled`);
-  console.log(`🎨 Image Generation: Enabled`);
-  console.log(`🔞 NSFW: ${NSFW_CONFIG.requireNSFWChannel ? 'NSFW channels only' : 'Enabled'}`);
+  console.log(`🎨 Image Generation: Enabled (Pollinations.ai)`);
+  console.log(`🎬 Video Generation: Enabled (5 free per user)`);
   console.log(`\n📋 Image commands:`);
-  console.log(`   /create <description> [flags]`);
-  console.log(`\n🔞 NSFW Flags (use in NSFW channels only):`);
-  Object.entries(NSFW_CONFIG.levels).forEach(([level, config]) => {
-    console.log(`   ${config.emoji} ${config.flag}: ${config.description}`);
+  console.log(`   /create <description> [--model] [--orientation]`);
+  console.log(`   /imagine <description> [--model] [--orientation]`);
+  console.log(`\n🎨 Available Models:`);
+  Object.entries(IMAGE_MODELS).forEach(([key, model]) => {
+    console.log(`   ${model.emoji} --${key}: ${model.description}`);
   });
+  console.log(`\n📐 Orientations:`);
+  console.log(`   --portrait  (768x1344)`);
+  console.log(`   --landscape (1344x768)`);
+  console.log(`   --square    (1024x1024) [default]`);
+  console.log(`\n🎬 Video commands:`);
+  console.log(`   /video <description>`);
+  console.log(`   /animate <description>`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -330,6 +266,76 @@ client.on('messageCreate', async (message) => {
 
     let userMessage = message.content.replace(/<@!?\d+>/g, '').trim();
 
+    // CHECK VIDEO GENERATION COMMANDS
+    const videoCommands = ['/video', '/animate', '/vid'];
+    const isVideoCommand = videoCommands.some(cmd => userMessage.toLowerCase().startsWith(cmd));
+
+    if (isVideoCommand) {
+      const prompt = userMessage.split(' ').slice(1).join(' ').trim();
+      
+      if (!prompt) {
+        const quota = checkVideoQuota(message.author.id);
+        await message.reply(`❌ Please provide a description for the video!\n\n**Usage:**\n\`/video <description>\`\n\n**Examples:**\n\`/video a cat walking in a futuristic city\`\n\`/animate ocean waves at sunset\`\n\n**Your Quota:** ${quota.used}/${quota.total} videos used | ${quota.remaining} remaining`);
+        return;
+      }
+
+      const quota = checkVideoQuota(message.author.id);
+      if (!quota.canGenerate) {
+        await message.reply(`❌ **Video Limit Reached!**\n\nYou've used all ${VIDEO_LIMIT} free videos.\n\n**Your Usage:** ${quota.used}/${quota.total}\n\n💡 **Tip:** You can still generate unlimited images with \`/create\`!`);
+        return;
+      }
+
+      console.log(`🎬 Generating video from prompt: "${prompt}" (User: ${message.author.tag}, ${quota.remaining} remaining)`);
+      
+      const processingMsg = await message.reply(`🎬 Creating video... Please wait! This may take 30-60 seconds.\n\n**Your Quota:** ${quota.used}/${quota.total} used | ${quota.remaining} videos remaining`);
+
+      try {
+        const enhancedPrompt = await enhancePrompt(prompt, true);
+        console.log('⚠️ Generating static image instead of video (free API limitation)');
+        const imageUrl = await generateImage(enhancedPrompt, 'flux', 'landscape');
+
+        console.log('📥 Downloading image...');
+        const imageResponse = await fetch(imageUrl);
+        const imageBuffer = await imageResponse.arrayBuffer();
+        const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { 
+          name: 'generated-video-frame.png' 
+        });
+
+        incrementVideoUsage(message.author.id);
+        const newQuota = checkVideoQuota(message.author.id);
+
+        const embed = new EmbedBuilder()
+          .setTitle('🎨 AI Generated Image (Video Mode)')
+          .setDescription(`**Original:** ${prompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 150)}${enhancedPrompt.length > 150 ? '...' : ''}\n\n⚠️ **Note:** Free video APIs are limited. This is a high-quality image representation.\n\n**Suggested Paid APIs for Real Videos:**\n• Runway ML\n• Luma AI Dream Machine\n• Stability AI Video\n\n**Quota Used:** ${newQuota.used}/${newQuota.total} | **Remaining:** ${newQuota.remaining}`)
+          .setImage('attachment://generated-video-frame.png')
+          .setColor(0xFF6B6B)
+          .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
+          .setTimestamp();
+
+        await processingMsg.delete();
+        await message.reply({ 
+          content: '⚠️ **Video generation requires paid API.** Here\'s a high-quality image instead!',
+          embeds: [embed], 
+          files: [attachment]
+        });
+
+        console.log(`✅ Image (video mode) created for: ${message.author.tag} (${newQuota.remaining} remaining)`);
+        
+        if (newQuota.remaining === 0) {
+          await message.channel.send(`⚠️ **${message.author.username}**, you've used all your video attempts! You can still generate unlimited images with \`/create\`.`);
+        } else if (newQuota.remaining === 1) {
+          await message.channel.send(`⚠️ **${message.author.username}**, you have **1 video attempt** remaining!`);
+        }
+        
+        return;
+
+      } catch (error) {
+        console.error('❌ Error creating video:', error);
+        await processingMsg.edit('⚠️ An error occurred while creating the video. Please try again! Your quota was not used.');
+        return;
+      }
+    }
+
     // CHECK IMAGE GENERATION COMMANDS
     const imageCommands = ['/create', '/imagine', '/draw', '/gen'];
     const isImageCommand = imageCommands.some(cmd => userMessage.toLowerCase().startsWith(cmd));
@@ -342,90 +348,90 @@ client.on('messageCreate', async (message) => {
           .map(([key, model]) => `${model.emoji} \`--${key}\`: ${model.description}`)
           .join('\n');
         
-        const nsfwList = Object.entries(NSFW_CONFIG.levels)
-          .map(([level, config]) => `${config.emoji} \`${config.flag}\`: ${config.description}`)
-          .join('\n');
-        
-        await message.reply(`❌ Please provide a description!\n\n**Usage:**\n\`/create <description> [flags]\`\n\n**Examples:**\n\`/create a cat --flux --portrait\`\n\`/create sunset --nsfw-soft --landscape\` ${!isDM ? '(NSFW channels only)' : ''}\n\n**🎨 Models:**\n${modelsList}\n\n**🔞 NSFW Levels:**\n${nsfwList}\n\n**Note:** NSFW only works in ${NSFW_CONFIG.requireNSFWChannel ? 'NSFW-marked channels' : 'designated areas'}`);
+        await message.reply(`❌ Please provide a description for the image!\n\n**Usage:**\n\`/create <description> [--model] [--orientation]\`\n\n**Examples:**\n\`/create a cat wearing sunglasses --flux --portrait\`\n\`/imagine cyberpunk city at night --turbo --landscape\`\n\`/create beautiful sunset --klein --square\`\n\n**🎨 Models:**\n${modelsList}\n\n**📐 Orientations:**\n📱 \`--portrait\` (768x1344)\n🖼️ \`--landscape\` (1344x768)\n⬛ \`--square\` (1024x1024) [default]\n\n💡 **New!** Use \`/video <description>\` to create videos!`);
         return;
       }
 
-      // Parse flags
-      const { model, orientation, nsfwLevel, cleanPrompt } = parseImageFlags(promptWithFlags);
-      
-      // Check NSFW permissions if NSFW flag is used
-      if (nsfwLevel) {
-        const nsfwCheck = canUseNSFW(message);
-        if (!nsfwCheck.allowed) {
-          const nsfwConfig = NSFW_CONFIG.levels[nsfwLevel];
-          await message.reply(`🔞 **NSFW Content Blocked**\n\n${nsfwConfig.emoji} **${nsfwConfig.name}** can only be used in:\n${NSFW_CONFIG.requireNSFWChannel ? '• NSFW-marked channels (enable in channel settings)' : ''}\n${NSFW_CONFIG.allowInDM ? '• Direct Messages' : ''}\n\n**Current location:** ${isDM ? 'DM' : message.channel.nsfw ? 'NSFW Channel ✅' : 'Regular Channel ❌'}\n\n💡 Remove the NSFW flag or use in an appropriate channel.`);
-          return;
-        }
-      }
-
+      // Parse model, orientation and clean prompt
+      const { model, orientation, cleanPrompt } = parseImageFlags(promptWithFlags);
       const { width, height, emoji } = ORIENTATIONS[orientation];
       const modelInfo = IMAGE_MODELS[model];
-      const nsfwInfo = nsfwLevel ? NSFW_CONFIG.levels[nsfwLevel] : null;
-      const nsfwWarning = nsfwInfo ? `${nsfwInfo.emoji} **${nsfwInfo.name}** ` : '';
 
-      console.log(`🎨 Generating ${nsfwWarning}${orientation} image (${width}x${height}) using ${modelInfo.name} from: "${cleanPrompt}"`);
+      console.log(`🎨 Generating ${orientation} image (${width}x${height}) using ${modelInfo.name} from prompt: "${cleanPrompt}"`);
       
-      const processingMsg = await message.reply(`🎨 Creating ${nsfwWarning}${emoji} **${orientation}** image with ${modelInfo.emoji} **${modelInfo.name}**... Please wait!`);
+      const processingMsg = await message.reply(`🎨 Creating ${emoji} **${orientation}** image with ${modelInfo.emoji} **${modelInfo.name}** (${width}x${height})... Please wait!`);
 
       try {
-        const enhancedPrompt = await enhancePrompt(cleanPrompt, false, nsfwLevel);
-        const imageUrl = await generateImage(enhancedPrompt, model, orientation, nsfwLevel);
+        const enhancedPrompt = await enhancePrompt(cleanPrompt, false);
+        const imageUrl = await generateImage(enhancedPrompt, model, orientation);
 
         const imageResponse = await fetch(imageUrl);
         const imageBuffer = await imageResponse.arrayBuffer();
         const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { 
-          name: 'generated-image.png',
-          description: nsfwInfo ? `NSFW: ${nsfwInfo.name}` : 'AI Generated Image'
+          name: 'generated-image.png' 
         });
 
-        const nsfwEmbed = nsfwInfo ? `**NSFW Level:** ${nsfwInfo.emoji} ${nsfwInfo.name}\n` : '';
-        
         const embed = new EmbedBuilder()
-          .setTitle(`🎨 AI Generated Image ${emoji} ${nsfwInfo ? nsfwInfo.emoji : ''}`)
-          .setDescription(`**Original:** ${cleanPrompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 150)}...\n${nsfwEmbed}**Model:** ${modelInfo.emoji} ${modelInfo.name}\n**Size:** ${emoji} ${orientation.toUpperCase()} (${width}x${height})`)
+          .setTitle(`🎨 AI Generated Image ${emoji}`)
+          .setDescription(`**Original:** ${cleanPrompt}\n**AI Prompt:** ${enhancedPrompt.substring(0, 200)}${enhancedPrompt.length > 200 ? '...' : ''}\n**Model:** ${modelInfo.emoji} ${modelInfo.name} (${modelInfo.quality})\n**Orientation:** ${emoji} ${orientation.toUpperCase()} (${width}x${height})`)
           .setImage('attachment://generated-image.png')
-          .setColor(nsfwInfo ? 0xFF6B6B : 0x00D9FF)
+          .setColor(0x00D9FF)
           .setFooter({ text: `Created by ${message.author.username} • Powered by Pollinations.ai` })
           .setTimestamp();
 
         await processingMsg.delete();
-        
-        // Spoiler tag for NSFW content
-        const replyContent = nsfwInfo ? `🔞 **${nsfwInfo.name}** content - Click to reveal` : null;
-        
         await message.reply({ 
-          content: replyContent,
           embeds: [embed], 
           files: [attachment]
         });
 
-        console.log(`✅ ${nsfwWarning}Image created for: ${message.author.tag}`);
+        console.log(`✅ ${orientation.toUpperCase()} image created with ${modelInfo.name} for: ${message.author.tag}`);
         return;
 
       } catch (error) {
         console.error('❌ Error creating image:', error);
-        await processingMsg.edit('⚠️ An error occurred. Please try again!');
+        await processingMsg.edit('⚠️ An error occurred while creating the image. Please try again!');
         return;
       }
     }
 
-    // CHECK NSFW INFO COMMAND
-    if (userMessage.toLowerCase() === '/nsfw' || userMessage.toLowerCase() === '/nsfw-info') {
-      const nsfwStatus = canUseNSFW(message);
-      const levelsList = Object.entries(NSFW_CONFIG.levels)
-        .map(([level, config]) => `${config.emoji} **${config.name}** (\`${config.flag}\`)\n└ ${config.description}`)
+    // CHECK MODELS COMMAND
+    if (userMessage.toLowerCase() === '/models' || userMessage.toLowerCase() === '/help') {
+      const modelsList = Object.entries(IMAGE_MODELS)
+        .map(([key, model]) => `${model.emoji} **${model.name}** (\`--${key}\`)\n└ ${model.description} • Quality: ${model.quality}`)
         .join('\n\n');
       
       const embed = new EmbedBuilder()
-        .setTitle('🔞 NSFW Information')
-        .setDescription(`**Current Status:** ${nsfwStatus.allowed ? '✅ Allowed' : '❌ Not Allowed'}\n${nsfwStatus.reason ? `**Reason:** ${nsfwStatus.reason}` : ''}\n\n**Available Levels:**\n${levelsList}\n\n**Usage:**\n\`/create your prompt ${NSFW_CONFIG.levels.soft.flag}\`\n\n**Requirements:**\n${NSFW_CONFIG.requireNSFWChannel ? '• Must be in NSFW-marked channel' : '• Available in all channels'}\n${NSFW_CONFIG.allowInDM ? '• Allowed in DMs' : '• Not allowed in DMs'}`)
-        .setColor(nsfwStatus.allowed ? 0x00FF00 : 0xFF0000)
-        .setFooter({ text: 'Use responsibly and follow Discord ToS' })
+        .setTitle('🎨 Available Image Models')
+        .setDescription(modelsList)
+        .addFields(
+          { 
+            name: '📐 Orientations', 
+            value: '📱 `--portrait` (768x1344)\n🖼️ `--landscape` (1344x768)\n⬛ `--square` (1024x1024)', 
+            inline: true 
+          },
+          { 
+            name: '💡 Examples', 
+            value: '`/create sunset --flux --landscape`\n`/imagine cat --turbo --portrait`\n`/create art --klein --square`', 
+            inline: true 
+          }
+        )
+        .setColor(0x00D9FF)
+        .setFooter({ text: 'Mix and match models with orientations!' })
+        .setTimestamp();
+      
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // CHECK QUOTA COMMAND
+    if (userMessage.toLowerCase() === '/quota' || userMessage.toLowerCase() === '/usage') {
+      const quota = checkVideoQuota(message.author.id);
+      const embed = new EmbedBuilder()
+        .setTitle('📊 Your Usage Statistics')
+        .setDescription(`**Video Generation:**\n🎬 Used: ${quota.used}/${quota.total}\n✅ Remaining: ${quota.remaining}\n\n**Image Generation:**\n🎨 Unlimited!\n\n💡 Use \`/video <description>\` to create videos\n💡 Use \`/create <description>\` to create images\n💡 Use \`/models\` to see available image models`)
+        .setColor(0x00D9FF)
+        .setFooter({ text: `User: ${message.author.username}` })
         .setTimestamp();
       
       await message.reply({ embeds: [embed] });
@@ -449,7 +455,8 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!userMessage && images.length === 0) {
-      await message.reply(`What would you like to talk about? 🤔\n\n💡 **Commands:**\n🎨 \`/create <description>\` - Generate images\n🔞 \`/nsfw\` - NSFW information\n📊 \`/quota\` - Check usage`);
+      const quota = checkVideoQuota(message.author.id);
+      await message.reply(`What would you like to talk about? 🤔\n\n💡 **Commands:**\n🎨 \`/create <description>\` - Generate images (unlimited)\n🎬 \`/video <description>\` - Generate videos (${quota.remaining}/${quota.total} remaining)\n📊 \`/quota\` - Check your usage\n🎨 \`/models\` - View available models`);
       return;
     }
 
